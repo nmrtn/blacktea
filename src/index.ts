@@ -23,12 +23,15 @@ export type {
   HistoryStore,
   IdempotencyStore,
   OnApprovalNeeded,
+  PayInput,
   PayOptions,
   PaymentIntent,
   PaymentIntentInput,
   PaymentIntentStatus,
+  PaymentRequirement,
   RailAdapter,
   Receipt,
+  SettleResult,
 } from "./types.js";
 
 export {

@@ -1,21 +1,62 @@
 /**
  * Core types shared across the library.
  *
- * These are the surface customers interact with directly (PaymentIntentInput,
- * Receipt, RailAdapter, etc) plus the interfaces customers can implement to
- * swap library defaults (HistoryQuery, IdempotencyStore).
+ * Two payment-related input types matter:
+ *   - PayInput: what the customer passes to pay(). Has the URL the agent
+ *     wants to call. Amount is not known yet (server decides).
+ *   - PaymentIntentInput: what the policy evaluator sees AFTER preflight.
+ *     Has the full picture (amount, currency, url, intent, recipient_wallet).
+ *
+ * The factory builds PaymentIntentInput from PayInput plus the
+ * PaymentRequirement that the rail returned from preflight().
  */
 
 /**
- * What the agent gives us. The library populates recipient_wallet from
- * the x402 402 response before passing to the policy evaluator.
+ * What the agent passes to pay(). The url is the API endpoint being called.
+ * max_amount is an optional safety cap; if the server asks for more, the
+ * payment is rejected before the policy even runs.
+ */
+export interface PayInput {
+  url: string;
+  intent: string;
+  max_amount?: number;
+  method?: string;
+  body?: unknown;
+  headers?: Record<string, string>;
+}
+
+/**
+ * What a rail's preflight() returns. The price and recipient for the
+ * pending payment, as told by the server.
+ */
+export interface PaymentRequirement {
+  amount: number;
+  currency: string;
+  recipient_wallet?: string;
+  network?: string;
+  /** Rail-specific extra fields (the raw 402 payload for x402, etc). */
+  raw?: unknown;
+}
+
+/**
+ * What the policy evaluator sees. Built from PayInput + PaymentRequirement.
+ * Operators in the policy DSL match on these fields.
  */
 export interface PaymentIntentInput {
   amount: number;
-  currency?: string;
+  currency: string;
   url: string;
   intent: string;
   recipient_wallet?: string;
+}
+
+/**
+ * What a rail's settle() returns once payment is signed and the resource
+ * is delivered.
+ */
+export interface SettleResult {
+  receipt: Receipt;
+  data: unknown;
 }
 
 /**
@@ -34,16 +75,17 @@ export interface Receipt {
 }
 
 /**
- * The runtime object representing a payment in flight or completed.
- * In v1 every PaymentIntent the library returns is already in a terminal
- * state (the factory awaits approval and rail execution internally).
- * The async state machine and .onStatusChange transitions land in T8.
+ * The runtime object returned by pay(). Carries the receipt and (for
+ * request-response rails like x402) the API response data.
+ * v1 PaymentIntents are always in a terminal state when pay() resolves.
+ * The async state machine lands in T8.
  */
 export interface PaymentIntent {
   id: string;
   status: PaymentIntentStatus;
-  input: PaymentIntentInput;
+  input: PayInput;
   receipt?: Receipt;
+  data?: unknown;
   error?: Error;
   onStatusChange(cb: (intent: PaymentIntent) => void): () => void;
 }
@@ -67,14 +109,29 @@ export interface PayOptions {
 }
 
 /**
- * A payment rail. v1 ships one implementation (x402Wallet). Future rails
- * (SEPA push, AP2, ACP, cards) implement this same shape.
+ * A payment rail. v1 ships one (x402Wallet). The interface splits the
+ * payment into two steps: preflight to learn the price, then settle to
+ * actually pay and retrieve the resource. Push rails (SEPA, ACH) will
+ * have a trivial preflight that echoes back the input the agent gave.
  */
 export interface RailAdapter {
   name: string;
-  supports(input: PaymentIntentInput): boolean;
-  estimate(input: PaymentIntentInput): { fee: number; eta_seconds: number };
-  pay(input: PaymentIntentInput, opts: PayOptions): Promise<Receipt>;
+  supports(input: PayInput): boolean;
+  /**
+   * Probe the URL (or the destination) to learn what payment is needed.
+   * For x402: make the initial HTTP request, read the 402 response,
+   * parse the PAYMENT-REQUIRED header, return the requirement.
+   * For push rails (future): return the amount the customer specified.
+   */
+  preflight(input: PayInput): Promise<PaymentRequirement>;
+  /**
+   * Sign the payment and deliver the resource (or move the money).
+   * For x402: retry the request with the PAYMENT-SIGNATURE header,
+   * return both the receipt and the response body.
+   * For push rails (future): submit the transfer, return the receipt
+   * with data left undefined.
+   */
+  settle(input: PayInput, requirement: PaymentRequirement, opts: PayOptions): Promise<SettleResult>;
 }
 
 /**
@@ -108,7 +165,7 @@ export interface HistoryStore extends HistoryQuery {
 
 /**
  * Idempotency cache. Maps idempotency key to the receipt of the first
- * successful pay() call with that key. v1 default is in-memory LRU+TTL.
+ * successful pay() call with that key.
  */
 export interface IdempotencyStore {
   get(key: string): Promise<Receipt | null>;
@@ -140,7 +197,6 @@ export type OnApprovalNeeded = (req: ApprovalRequest) => Promise<ApprovalDecisio
 
 /**
  * Audit event written by the library at every step of payment processing.
- * Default sink is JSON lines to stdout.
  */
 export interface AuditEvent {
   ts: string;

@@ -1,9 +1,10 @@
 /**
  * blacktea() factory tests.
  *
- * Uses an in-memory FakeHistoryStore and a configurable FakeRail to keep
- * everything in-process. No file system, no network. The audit sink is
- * collected into an array so tests can assert on the audit log.
+ * Uses an in-memory FakeHistoryStore and a configurable FakeRail (now with
+ * preflight + settle) to keep everything in-process. No file system, no
+ * network. The audit sink is collected into an array so tests can assert
+ * on the audit log.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -15,9 +16,12 @@ import type {
   HistoryFilter,
   HistoryRecord,
   HistoryStore,
-  PaymentIntentInput,
+  PayInput,
+  PayOptions,
+  PaymentRequirement,
   RailAdapter,
   Receipt,
+  SettleResult,
 } from "../src/types.js";
 
 class FakeHistory implements HistoryStore {
@@ -45,48 +49,82 @@ function match(e: HistoryRecord, filter: HistoryFilter | undefined): boolean {
   return true;
 }
 
+/**
+ * A configurable rail used only in tests. Default behaviour:
+ *   - supports() returns true
+ *   - preflight() returns a fixed PaymentRequirement (amount 4, wallet 0xabc)
+ *   - settle() returns a fake receipt and a "fake data" body
+ *
+ * Override any of those by passing a partial behavior object. Tracks
+ * settle() calls for assertion.
+ */
 function fakeRail(
   name = "x402",
-  behavior: Partial<RailAdapter> = {},
+  behavior: {
+    supports?: (input: PayInput) => boolean;
+    preflight?: (input: PayInput) => Promise<PaymentRequirement>;
+    settle?: (input: PayInput, req: PaymentRequirement, opts: PayOptions) => Promise<SettleResult>;
+  } = {},
 ): RailAdapter & {
-  payCalls: PaymentIntentInput[];
+  settleCalls: Array<{ input: PayInput; req: PaymentRequirement }>;
+  preflightCalls: PayInput[];
 } {
-  const calls: PaymentIntentInput[] = [];
-  const rail: RailAdapter & { payCalls: PaymentIntentInput[] } = {
+  const settleCalls: Array<{ input: PayInput; req: PaymentRequirement }> = [];
+  const preflightCalls: PayInput[] = [];
+
+  const defaultPreflight = async (input: PayInput): Promise<PaymentRequirement> => {
+    preflightCalls.push(input);
+    return {
+      amount: 4,
+      currency: "USDC",
+      recipient_wallet: "0xabc123",
+      network: "base-sepolia",
+    };
+  };
+
+  const defaultSettle = async (input: PayInput, req: PaymentRequirement): Promise<SettleResult> => {
+    settleCalls.push({ input, req });
+    const receipt: Receipt = {
+      id: "rail_receipt_id",
+      amount: req.amount,
+      currency: req.currency,
+      rail: name,
+      rail_charge_id: "ch_test_123",
+      recipient_url: input.url,
+      recipient_wallet: req.recipient_wallet,
+      paid_at: new Date().toISOString(),
+    };
+    return { receipt, data: { fake: "api response" } };
+  };
+
+  const rail: RailAdapter & {
+    settleCalls: typeof settleCalls;
+    preflightCalls: typeof preflightCalls;
+  } = {
     name,
     supports: behavior.supports ?? (() => true),
-    estimate: behavior.estimate ?? (() => ({ fee: 0, eta_seconds: 2 })),
-    pay:
-      behavior.pay ??
-      (async (input): Promise<Receipt> => {
-        calls.push(input);
-        return {
-          id: "rail_receipt_id",
-          amount: input.amount,
-          currency: input.currency ?? "USDC",
-          rail: name,
-          rail_charge_id: "ch_test_123",
-          recipient_url: input.url,
-          recipient_wallet: input.recipient_wallet,
-          paid_at: new Date().toISOString(),
-        };
-      }),
-    payCalls: calls,
+    preflight: behavior.preflight
+      ? async (input) => {
+          preflightCalls.push(input);
+          return behavior.preflight ? behavior.preflight(input) : defaultPreflight(input);
+        }
+      : defaultPreflight,
+    settle: behavior.settle
+      ? async (input, req, opts) => {
+          settleCalls.push({ input, req });
+          return behavior.settle ? behavior.settle(input, req, opts) : defaultSettle(input, req);
+        }
+      : defaultSettle,
+    settleCalls,
+    preflightCalls,
   };
   return rail;
 }
 
-const baseInput: PaymentIntentInput = {
-  amount: 4,
-  currency: "USDC",
+const baseInput: PayInput = {
   url: "https://api.openai.com/v1/chat",
   intent: "buy GPT-4 tokens",
-  recipient_wallet: "0xabc123",
 };
-
-function silentAudit(): AuditEvent[] {
-  return [];
-}
 
 function collectingAudit(): { sink: (e: AuditEvent) => void; events: AuditEvent[] } {
   const events: AuditEvent[] = [];
@@ -95,7 +133,7 @@ function collectingAudit(): { sink: (e: AuditEvent) => void; events: AuditEvent[
 
 describe("blacktea()", () => {
   describe("happy path (allow rule)", () => {
-    it("calls the rail and returns a completed intent with a receipt", async () => {
+    it("calls preflight then settle and returns a completed intent with receipt and data", async () => {
       const rail = fakeRail();
       const history = new FakeHistory();
       const policy: Policy = {
@@ -108,7 +146,10 @@ describe("blacktea()", () => {
 
       expect(intent.status).toBe("completed");
       expect(intent.receipt?.rail).toBe("x402");
-      expect(rail.payCalls).toHaveLength(1);
+      expect(intent.receipt?.amount).toBe(4);
+      expect(intent.data).toEqual({ fake: "api response" });
+      expect(rail.preflightCalls).toHaveLength(1);
+      expect(rail.settleCalls).toHaveLength(1);
     });
 
     it("records the payment to history on success", async () => {
@@ -144,6 +185,7 @@ describe("blacktea()", () => {
       expect(eventNames).toEqual([
         "intent_created",
         "rail_chosen",
+        "preflight_received",
         "policy_evaluated",
         "rail_called",
         "payment_completed",
@@ -151,8 +193,52 @@ describe("blacktea()", () => {
     });
   });
 
+  describe("max_amount safety cap", () => {
+    it("throws PolicyDeniedError when the server asks for more than max_amount", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [],
+        default: { approve: true },
+      };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      await expect(pay({ ...baseInput, max_amount: 1 })).rejects.toThrow(/max_amount_exceeded/);
+      expect(rail.settleCalls).toHaveLength(0);
+    });
+
+    it("allows when server amount is within max_amount", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [],
+        default: { approve: true },
+      };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      const intent = await pay({ ...baseInput, max_amount: 100 });
+      expect(intent.status).toBe("completed");
+      expect(rail.settleCalls).toHaveLength(1);
+    });
+
+    it("evaluates policy AFTER max_amount check (cap fires first)", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [{ if: { amount_lt: 10 }, then: { approve: true } }],
+        default: { approve: true },
+      };
+      const audit = collectingAudit();
+      const pay = blacktea({ source: rail, policy, history, audit: audit.sink });
+
+      await expect(pay({ ...baseInput, max_amount: 1 })).rejects.toThrow(PolicyDeniedError);
+      const events = audit.events.map((e) => e.event);
+      expect(events).not.toContain("policy_evaluated");
+    });
+  });
+
   describe("reject rule", () => {
-    it("throws PolicyDeniedError and does not call the rail", async () => {
+    it("throws PolicyDeniedError and does not call settle", async () => {
       const rail = fakeRail();
       const history = new FakeHistory();
       const policy: Policy = {
@@ -162,8 +248,21 @@ describe("blacktea()", () => {
       const pay = blacktea({ source: rail, policy, history, audit: () => {} });
 
       await expect(pay(baseInput)).rejects.toThrow(PolicyDeniedError);
-      expect(rail.payCalls).toHaveLength(0);
+      expect(rail.settleCalls).toHaveLength(0);
       expect(history.events).toHaveLength(0);
+    });
+
+    it("calls preflight before the policy can fire", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [{ if: { amount_gte: 1 }, then: { reject: "blocked" } }],
+        default: { approve: true },
+      };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      await expect(pay(baseInput)).rejects.toThrow(PolicyDeniedError);
+      expect(rail.preflightCalls).toHaveLength(1);
     });
 
     it("PolicyDeniedError carries the reject reason and rule_fired", async () => {
@@ -208,7 +307,7 @@ describe("blacktea()", () => {
 
       expect(onApprovalNeeded).toHaveBeenCalledOnce();
       expect(intent.status).toBe("completed");
-      expect(rail.payCalls).toHaveLength(1);
+      expect(rail.settleCalls).toHaveLength(1);
     });
 
     it("throws PolicyDeniedError when onApprovalNeeded returns deny", async () => {
@@ -227,7 +326,7 @@ describe("blacktea()", () => {
       });
 
       await expect(pay(baseInput)).rejects.toThrow(PolicyDeniedError);
-      expect(rail.payCalls).toHaveLength(0);
+      expect(rail.settleCalls).toHaveLength(0);
     });
 
     it("throws ValidationError if callback channel fires but no onApprovalNeeded is configured", async () => {
@@ -250,9 +349,7 @@ describe("blacktea()", () => {
         ],
         default: { approve: true },
       };
-      const onApprovalNeeded = vi.fn(
-        () => new Promise<never>(() => {}), // never resolves
-      );
+      const onApprovalNeeded = vi.fn(() => new Promise<never>(() => {}));
       const pay = blacktea({
         source: rail,
         policy: policyShort,
@@ -262,7 +359,35 @@ describe("blacktea()", () => {
       });
 
       await expect(pay(baseInput)).rejects.toThrow(/Approval timed out/);
-      expect(rail.payCalls).toHaveLength(0);
+      expect(rail.settleCalls).toHaveLength(0);
+    });
+
+    it("passes the amount and recipient from preflight to the approval request", async () => {
+      const rail = fakeRail("x402", {
+        preflight: async () => ({
+          amount: 1200,
+          currency: "USDC",
+          recipient_wallet: "0xLUFTHANSA",
+        }),
+      });
+      const history = new FakeHistory();
+      let captured: { amount?: number; recipient_wallet?: string } = {};
+      const onApprovalNeeded = vi.fn(async (req) => {
+        captured = { amount: req.amount, recipient_wallet: req.recipient_wallet };
+        return { decision: "approve" as const };
+      });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        onApprovalNeeded,
+        audit: () => {},
+      });
+
+      await pay(baseInput);
+
+      expect(captured.amount).toBe(1200);
+      expect(captured.recipient_wallet).toBe("0xLUFTHANSA");
     });
   });
 
@@ -280,7 +405,8 @@ describe("blacktea()", () => {
       const b = await pay(baseInput, { idempotency_key: "k1" });
 
       expect(a.receipt?.id).toBe(b.receipt?.id);
-      expect(rail.payCalls).toHaveLength(1); // rail only called once
+      expect(rail.settleCalls).toHaveLength(1);
+      expect(rail.preflightCalls).toHaveLength(1); // preflight also skipped on cache hit
     });
 
     it("each call gets a fresh receipt when no idempotency key is provided", async () => {
@@ -294,7 +420,7 @@ describe("blacktea()", () => {
 
       await pay(baseInput);
       await pay(baseInput);
-      expect(rail.payCalls).toHaveLength(2);
+      expect(rail.settleCalls).toHaveLength(2);
     });
   });
 
@@ -304,7 +430,7 @@ describe("blacktea()", () => {
       default: { approve: true },
     };
 
-    it("never calls the rail", async () => {
+    it("never calls settle", async () => {
       const rail = fakeRail();
       const history = new FakeHistory();
       const pay = blacktea({
@@ -315,10 +441,24 @@ describe("blacktea()", () => {
         dry_run: true,
       });
       await pay(baseInput);
-      expect(rail.payCalls).toHaveLength(0);
+      expect(rail.settleCalls).toHaveLength(0);
     });
 
-    it("returns a receipt with simulated: true", async () => {
+    it("still calls preflight so policy has a real amount to evaluate", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        audit: () => {},
+        dry_run: true,
+      });
+      await pay(baseInput);
+      expect(rail.preflightCalls).toHaveLength(1);
+    });
+
+    it("returns a receipt with simulated: true and data: undefined", async () => {
       const rail = fakeRail();
       const history = new FakeHistory();
       const pay = blacktea({
@@ -331,6 +471,7 @@ describe("blacktea()", () => {
       const intent = await pay(baseInput);
       expect(intent.receipt?.simulated).toBe(true);
       expect(intent.receipt?.rail_charge_id).toMatch(/^dryrun_/);
+      expect(intent.data).toBeUndefined();
     });
 
     it("emits a payment_simulated audit event instead of rail_called", async () => {
@@ -403,8 +544,8 @@ describe("blacktea()", () => {
       const pay = blacktea({ source: [a, b], policy, history, audit: () => {} });
       const intent = await pay(baseInput, { rail: "b" });
       expect(intent.receipt?.rail).toBe("b");
-      expect(a.payCalls).toHaveLength(0);
-      expect(b.payCalls).toHaveLength(1);
+      expect(a.settleCalls).toHaveLength(0);
+      expect(b.settleCalls).toHaveLength(1);
     });
 
     it("throws NoEligibleRailError when no rail supports the input", async () => {
@@ -416,7 +557,6 @@ describe("blacktea()", () => {
   });
 
   describe("input validation", () => {
-    const rail = fakeRail();
     const history = new FakeHistory();
     const policy: Policy = {
       rules: [{ if: { amount_lt: 10 }, then: { approve: true } }],
@@ -424,23 +564,25 @@ describe("blacktea()", () => {
     };
 
     function makePay() {
+      const rail = fakeRail();
       return blacktea({ source: rail, policy, history, audit: () => {} });
     }
 
-    it("throws ValidationError on negative amount", async () => {
-      await expect(makePay()({ ...baseInput, amount: -1 })).rejects.toThrow(/amount/);
-    });
-
-    it("throws ValidationError on zero amount", async () => {
-      await expect(makePay()({ ...baseInput, amount: 0 })).rejects.toThrow(/amount/);
-    });
-
-    it("throws ValidationError on NaN amount", async () => {
-      await expect(makePay()({ ...baseInput, amount: Number.NaN })).rejects.toThrow(/amount/);
-    });
-
     it("throws ValidationError on empty url", async () => {
-      await expect(makePay()({ ...baseInput, url: "" })).rejects.toThrow(/url/);
+      await expect(makePay()({ url: "", intent: "x" })).rejects.toThrow(/url/);
+    });
+
+    it("throws ValidationError on missing intent type", async () => {
+      const bad = { url: "https://x.com" } as unknown as PayInput;
+      await expect(makePay()(bad)).rejects.toThrow(/intent/);
+    });
+
+    it("throws ValidationError on negative max_amount", async () => {
+      await expect(makePay()({ ...baseInput, max_amount: -5 })).rejects.toThrow(/max_amount/);
+    });
+
+    it("throws ValidationError on zero max_amount", async () => {
+      await expect(makePay()({ ...baseInput, max_amount: 0 })).rejects.toThrow(/max_amount/);
     });
   });
 
@@ -452,7 +594,31 @@ describe("blacktea()", () => {
     });
   });
 
-  it("silentAudit is unused-safe", () => {
-    expect(silentAudit()).toEqual([]);
+  describe("rail failures", () => {
+    it("RailUnavailableError when preflight throws", async () => {
+      const rail = fakeRail("flaky", {
+        preflight: async () => {
+          throw new Error("network timeout");
+        },
+      });
+      const history = new FakeHistory();
+      const policy: Policy = { rules: [], default: { approve: true } };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      await expect(pay(baseInput)).rejects.toThrow(/network timeout/);
+    });
+
+    it("RailUnavailableError when settle throws", async () => {
+      const rail = fakeRail("flaky", {
+        settle: async () => {
+          throw new Error("signature rejected");
+        },
+      });
+      const history = new FakeHistory();
+      const policy: Policy = { rules: [], default: { approve: true } };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      await expect(pay(baseInput)).rejects.toThrow(/signature rejected/);
+    });
   });
 });

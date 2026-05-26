@@ -14,24 +14,26 @@ const pay = blacktea({
   }),
 });
 
-// €4 for an OpenAI call. Under the daily limit. Just pays.
-await pay({
-  amount: 4,
+// Small API call. Server asks 4 USDC. Under the policy threshold.
+// Library signs the payment, retries, returns the chat completion.
+const { data, receipt } = await pay({
   url: "https://api.openai.com/v1/chat",
   intent: "buy GPT-4 tokens",
 });
+// data is the chat completion. receipt is the payment record.
 
-// €1,200 for premium data. The approval rule fires.
-// Your phone buzzes with the agent's reason. Tap to approve.
-await pay({
-  amount: 1200,
+// Premium dataset. Server asks 1200 USDC. Approval rule fires.
+// Your onApprovalNeeded function is called. You tap approve in Slack.
+// Library proceeds, returns the dataset.
+const { data: dataset } = await pay({
   url: "https://premium-data.example.com/dump",
   intent: "monthly dataset for the analyst agent",
+  max_amount: 2000, // safety cap; throws if the server asks for more
 });
 
-// €50 to a sanctioned wallet. Never happens.
+// Sanctioned recipient. Policy rejects before any payment is sent.
+// pay() throws PolicyDeniedError. No money moves.
 await pay({
-  amount: 50,
   url: "https://sketchy-api.example.com/access",
   intent: "test",
 });

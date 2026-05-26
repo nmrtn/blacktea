@@ -5,14 +5,24 @@
  * cache, audit sink, and approval callback into a single pay() function
  * that the agent calls for each payment.
  *
- * v1 simplifications (relaxed in later tasks):
- *   - pay() awaits everything internally (no async state machine). The
- *     returned PaymentIntent is always in a terminal state. T8 will add
- *     transitions and a real onStatusChange contract.
- *   - Approval channels: console (CLI prompt) and callback (onApprovalNeeded).
+ * Flow (request-response, x402-shaped):
+ *   1. Validate the input shape (PayInput).
+ *   2. Check the idempotency cache. Hit returns cached receipt and data.
+ *   3. Pick a rail.
+ *   4. rail.preflight(input)  -> PaymentRequirement (amount, recipient, ...).
+ *   5. Enforce max_amount if the customer set one. Throw PolicyDenied
+ *      if the server is asking for more than the cap.
+ *   6. Evaluate the policy with the full PaymentIntentInput
+ *      (built from PayInput + PaymentRequirement).
+ *   7. Branch on decision: allow / approval / reject.
+ *   8. If approved, rail.settle(input, requirement)  -> { receipt, data }.
+ *   9. Record to history, cache the receipt, emit audit, return.
+ *
+ * v1 simplifications:
+ *   - Approval channels: console (CLI) and callback (onApprovalNeeded).
  *     Webhook delivery is deferred to v1.5.
- *   - Rail selection: with one v1 rail, the chosen rail is whichever
- *     supports() returns true first. Or the caller's opts.rail override.
+ *   - PaymentIntent is always in a terminal state when pay() resolves.
+ *     Async state machine lands in T8.
  */
 
 import { randomUUID } from "node:crypto";
@@ -36,10 +46,12 @@ import type {
   HistoryStore,
   IdempotencyStore,
   OnApprovalNeeded,
+  PayInput,
   PayOptions,
   PaymentIntent,
   PaymentIntentInput,
   PaymentIntentStatus,
+  PaymentRequirement,
   RailAdapter,
   Receipt,
 } from "./types.js";
@@ -54,7 +66,7 @@ export interface BlackteaOptions {
   dry_run?: boolean;
 }
 
-export type PayFunction = (input: PaymentIntentInput, opts?: PayOptions) => Promise<PaymentIntent>;
+export type PayFunction = (input: PayInput, opts?: PayOptions) => Promise<PaymentIntent>;
 
 const DEFAULT_IDEMPOTENCY_TTL_SECONDS = 24 * 3600;
 
@@ -82,10 +94,9 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     const idempotencyKey = opts.idempotency_key ?? intentId;
 
     emit(audit, "intent_created", intentId, {
-      amount: input.amount,
-      currency: input.currency,
       url: input.url,
       intent: input.intent,
+      max_amount: input.max_amount,
     });
 
     // Idempotency check first. If we have already settled this exact key,
@@ -96,13 +107,52 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         idempotency_key: idempotencyKey,
         original_receipt_id: cached.id,
       });
-      return makeTerminalIntent(intentId, input, "completed", cached);
+      return makeTerminalIntent(intentId, input, "completed", cached, undefined);
     }
 
     const rail = pickRail(rails, input, opts.rail);
     emit(audit, "rail_chosen", intentId, { rail: rail.name });
 
-    const decision = await evaluatePolicy(input, policy, history);
+    // Step 1: preflight. Learn what payment is needed.
+    let requirement: PaymentRequirement;
+    try {
+      requirement = await rail.preflight(input);
+    } catch (err) {
+      emit(audit, "preflight_failed", intentId, {
+        rail: rail.name,
+        error: (err as Error).message,
+      });
+      throw new RailUnavailableError(rail.name, (err as Error).message);
+    }
+    emit(audit, "preflight_received", intentId, {
+      amount: requirement.amount,
+      currency: requirement.currency,
+      recipient_wallet: requirement.recipient_wallet,
+    });
+
+    // Step 2: enforce max_amount if the customer set one. This is a
+    // pre-policy hard cap because if the server is asking for more than
+    // the customer was willing to pay, no policy evaluation can rescue it.
+    if (input.max_amount !== undefined && requirement.amount > input.max_amount) {
+      emit(audit, "payment_denied", intentId, {
+        reason: "max_amount_exceeded",
+        rule_fired: "input.max_amount",
+        requested: requirement.amount,
+        cap: input.max_amount,
+      });
+      throw new PolicyDeniedError("max_amount_exceeded", "input.max_amount");
+    }
+
+    // Step 3: build the full intent and evaluate the policy.
+    const policyInput: PaymentIntentInput = {
+      amount: requirement.amount,
+      currency: requirement.currency,
+      url: input.url,
+      intent: input.intent,
+      ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
+    };
+
+    const decision = await evaluatePolicy(policyInput, policy, history);
     emit(audit, "policy_evaluated", intentId, {
       decision: decision.kind,
       rule_fired: decision.rule_fired,
@@ -123,7 +173,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     if (decision.kind === "approval") {
       const ok = await runApprovalFlow({
         intentId,
-        input,
+        policyInput,
         decision,
         onApprovalNeeded,
         audit,
@@ -141,15 +191,22 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       }
     }
 
-    // Either decision was allow, or approval came back yes. Move money.
+    // Either decision was allow, or approval came back yes. Settle.
     let receipt: Receipt;
+    let data: unknown;
     if (dryRun) {
-      receipt = makeSimulatedReceipt(intentId, input, rail);
-      emit(audit, "payment_simulated", intentId, { rail: rail.name, amount: input.amount });
+      receipt = makeSimulatedReceipt(intentId, policyInput, rail);
+      data = undefined;
+      emit(audit, "payment_simulated", intentId, {
+        rail: rail.name,
+        amount: requirement.amount,
+      });
     } else {
       emit(audit, "rail_called", intentId, { rail: rail.name });
       try {
-        receipt = await rail.pay(input, opts);
+        const settled = await rail.settle(input, requirement, opts);
+        receipt = settled.receipt;
+        data = settled.data;
       } catch (err) {
         emit(audit, "payment_failed", intentId, {
           rail: rail.name,
@@ -178,21 +235,26 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       simulated: receipt.simulated ?? false,
     });
 
-    return makeTerminalIntent(intentId, input, "completed", receipt);
+    return makeTerminalIntent(intentId, input, "completed", receipt, data);
   };
 }
 
 // ---------- input validation ----------
 
-function validateInput(input: PaymentIntentInput): void {
-  if (typeof input.amount !== "number" || !Number.isFinite(input.amount) || input.amount <= 0) {
-    throw new ValidationError(`Invalid amount: ${input.amount}. Must be a positive number.`);
-  }
+function validateInput(input: PayInput): void {
   if (typeof input.url !== "string" || input.url.length === 0) {
     throw new ValidationError("Invalid url. Must be a non-empty string.");
   }
   if (typeof input.intent !== "string") {
     throw new ValidationError("Invalid intent. Must be a string.");
+  }
+  if (
+    input.max_amount !== undefined &&
+    (!Number.isFinite(input.max_amount) || input.max_amount <= 0)
+  ) {
+    throw new ValidationError(
+      `Invalid max_amount: ${input.max_amount}. Must be a positive number when provided.`,
+    );
   }
 }
 
@@ -200,7 +262,7 @@ function validateInput(input: PaymentIntentInput): void {
 
 function pickRail(
   rails: RailAdapter[],
-  input: PaymentIntentInput,
+  input: PayInput,
   override: string | undefined,
 ): RailAdapter {
   if (override) {
@@ -229,12 +291,12 @@ interface ApprovalOutcome {
 
 async function runApprovalFlow(args: {
   intentId: string;
-  input: PaymentIntentInput;
+  policyInput: PaymentIntentInput;
   decision: { channel: "console" | "callback"; timeout_seconds: number; rule_fired: string };
   onApprovalNeeded: OnApprovalNeeded | undefined;
   audit: AuditSink;
 }): Promise<ApprovalOutcome> {
-  const { intentId, input, decision, onApprovalNeeded, audit } = args;
+  const { intentId, policyInput, decision, onApprovalNeeded, audit } = args;
   const expiresAt = new Date(Date.now() + decision.timeout_seconds * 1000).toISOString();
 
   emit(audit, "approval_requested", intentId, {
@@ -246,15 +308,14 @@ async function runApprovalFlow(args: {
   if (decision.channel === "console") {
     return awaitConsoleApproval({
       intentId,
-      amount: input.amount,
-      currency: input.currency ?? "USDC",
-      url: input.url,
-      intent: input.intent,
+      amount: policyInput.amount,
+      currency: policyInput.currency,
+      url: policyInput.url,
+      intent: policyInput.intent,
       timeoutMs: decision.timeout_seconds * 1000,
     });
   }
 
-  // callback channel
   if (!onApprovalNeeded) {
     throw new ValidationError(
       `Policy requires "callback" approval but blacktea() was not given onApprovalNeeded.`,
@@ -263,11 +324,11 @@ async function runApprovalFlow(args: {
 
   const request = {
     intent_id: intentId,
-    amount: input.amount,
-    currency: input.currency ?? "USDC",
-    recipient_wallet: input.recipient_wallet,
-    recipient_url: input.url,
-    intent: input.intent,
+    amount: policyInput.amount,
+    currency: policyInput.currency,
+    recipient_wallet: policyInput.recipient_wallet,
+    recipient_url: policyInput.url,
+    intent: policyInput.intent,
     rule_fired: decision.rule_fired,
     expires_at: expiresAt,
   };
@@ -339,17 +400,17 @@ function defaultAuditSink(event: AuditEvent): void {
 
 function makeSimulatedReceipt(
   intentId: string,
-  input: PaymentIntentInput,
+  policyInput: PaymentIntentInput,
   rail: RailAdapter,
 ): Receipt {
   return {
     id: intentId,
-    amount: input.amount,
-    currency: input.currency ?? "USDC",
+    amount: policyInput.amount,
+    currency: policyInput.currency,
     rail: rail.name,
     rail_charge_id: `dryrun_${randomUUID()}`,
-    recipient_url: input.url,
-    recipient_wallet: input.recipient_wallet,
+    recipient_url: policyInput.url,
+    recipient_wallet: policyInput.recipient_wallet,
     paid_at: new Date().toISOString(),
     simulated: true,
   };
@@ -357,19 +418,18 @@ function makeSimulatedReceipt(
 
 function makeTerminalIntent(
   intentId: string,
-  input: PaymentIntentInput,
+  input: PayInput,
   status: PaymentIntentStatus,
   receipt: Receipt,
+  data: unknown,
 ): PaymentIntent {
   const intent: PaymentIntent = {
     id: intentId,
     status,
     input,
     receipt,
+    data,
     onStatusChange(cb) {
-      // The intent is already in a terminal state when the Promise resolves
-      // in v1. Fire the callback once on next tick so the caller's code
-      // path matches the future async flow. Return a no-op unsubscribe.
       queueMicrotask(() => cb(intent));
       return () => {};
     },
