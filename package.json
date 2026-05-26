@@ -17,7 +17,7 @@
       "import": "./dist/adapters/index.js"
     }
   },
-  "files": ["dist", "schemas", "README.md", "LICENSE"],
+  "files": ["dist", "README.md", "LICENSE"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
