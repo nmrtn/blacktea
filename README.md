@@ -1,5 +1,7 @@
 # blacktea
 
+[![CI](https://github.com/nmrtn/blacktea/actions/workflows/ci.yml/badge.svg)](https://github.com/nmrtn/blacktea/actions/workflows/ci.yml)
+
 Spending controls for AI agents paying online.
 
 ```typescript
@@ -64,6 +66,32 @@ Today people patch this together themselves with YAML configs, Slack webhooks, a
 ```bash
 npm install @nmrtn/blacktea
 ```
+
+## Try it
+
+Two runnable examples ship in the repo:
+
+- **`examples/x402-quickstart/`** — a local x402 buyer + seller. End-to-end
+  proof the protocol works against Base Sepolia testnet. Requires a Coinbase
+  Developer Platform account for testnet funds; the README walks you through
+  every step.
+- **`examples/agent-sdk-demo/`** — a Claude agent (using the Anthropic API)
+  that autonomously decides to call `pay()` to fetch a paywalled API. The
+  full lifecycle is visible: tool call, policy evaluation, x402 signing,
+  on-chain settlement, response handed back to the model.
+
+The first time we ran the agent demo, Claude settled this transaction
+autonomously: [`0x1417b91e...`](https://sepolia.basescan.org/tx/0x1417b91ee70aa8b2b22a1e42b3a247cd2bbedfc531e295d7338fbaf8e83f9165).
+
+## Plug it into your agent
+
+`pay()` is a normal async TypeScript function. Wire it into your LLM as a
+tool: register it in your tools array, route the tool call into `pay()`,
+send the returned `{ data, receipt }` back as the tool result. See
+`examples/agent-sdk-demo/demo.ts` for the full pattern.
+
+A native MCP server (one-line install for Claude Desktop, Cursor, and any
+MCP-aware agent) is on the roadmap for v0.2.
 
 ## A policy file looks like this
 

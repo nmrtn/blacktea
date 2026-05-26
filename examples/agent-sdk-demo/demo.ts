@@ -147,7 +147,9 @@ async function runAgent(userMessage: string): Promise<void> {
         const intent = await pay(args);
         console.log(
           `\n<<< pay() returned. tx=${intent.receipt?.rail_charge_id ?? "(none)"}, data size=${
-            typeof intent.data === "string" ? intent.data.length : JSON.stringify(intent.data ?? "").length
+            typeof intent.data === "string"
+              ? intent.data.length
+              : JSON.stringify(intent.data ?? "").length
           } bytes\n`,
         );
         toolResults.push({
