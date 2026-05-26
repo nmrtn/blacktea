@@ -83,7 +83,7 @@ export const ActionSchema = z.union([
         z
           .object({
             via: ApprovalChannelSchema,
-            timeout_seconds: z.number().int().positive().optional(),
+            timeout_seconds: z.number().positive().optional(),
           })
           .strict(),
       ]),

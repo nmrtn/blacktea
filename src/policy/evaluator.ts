@@ -42,12 +42,13 @@ export async function evaluatePolicy(
     now: opts.now ?? (() => new Date()),
   };
 
-  for (const rule of policy.rules) {
-    if (await matchesCondition(rule.if, ctx)) {
-      return actionToDecision(rule.then);
+  for (let i = 0; i < policy.rules.length; i++) {
+    const rule = policy.rules[i];
+    if (rule && (await matchesCondition(rule.if, ctx))) {
+      return actionToDecision(rule.then, `rule[${i}]`);
     }
   }
-  return actionToDecision(policy.default);
+  return actionToDecision(policy.default, "default");
 }
 
 async function matchesCondition(condition: PolicyCondition, ctx: EvalContext): Promise<boolean> {

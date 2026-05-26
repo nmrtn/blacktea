@@ -1,12 +1,50 @@
 /**
  * @nmrtn/blacktea
  *
- * Spending controls for AI agents paying online.
- * See README.md for the user-facing pitch and docs/policy-cookbook.md
- * for the policy language reference.
+ * Public exports. The factory and the types a customer wires into their
+ * agent. Rail adapters live under @nmrtn/blacktea/adapters and stay out
+ * of this barrel so plain consumers do not pay for unused rail clients.
  */
 
 export const VERSION = "0.0.1";
 
-// Public exports land here as the library is built out.
-// See CLAUDE.md for the planned layout and the implementation order.
+export { blacktea } from "./agent.js";
+export type { BlackteaOptions, PayFunction } from "./agent.js";
+
+export type {
+  ApprovalChannel,
+  ApprovalDecision,
+  ApprovalRequest,
+  AuditEvent,
+  AuditSink,
+  HistoryFilter,
+  HistoryQuery,
+  HistoryRecord,
+  HistoryStore,
+  IdempotencyStore,
+  OnApprovalNeeded,
+  PayOptions,
+  PaymentIntent,
+  PaymentIntentInput,
+  PaymentIntentStatus,
+  RailAdapter,
+  Receipt,
+} from "./types.js";
+
+export {
+  ApprovalTimeoutError,
+  NetworkError,
+  NoEligibleRailError,
+  PolicyDeniedError,
+  PolicyParseError,
+  RailUnavailableError,
+  ValidationError,
+  isBlackteaError,
+} from "./errors.js";
+
+export type { Policy, PolicyAction, PolicyCondition, PolicyRule } from "./policy/schema.js";
+export { PolicySchema } from "./policy/schema.js";
+export { loadPolicy } from "./policy/load.js";
+
+export { InMemoryIdempotencyStore } from "./idempotency/in-memory.js";
+export { FileBackedHistoryStore } from "./history/file-backed.js";

@@ -82,18 +82,23 @@ describe("evaluatePolicy", () => {
   describe("default action when no rules match", () => {
     it("returns allow when default is approve", async () => {
       const decision = await evaluatePolicy(baseInput, allowAllDefault, history);
-      expect(decision).toEqual({ kind: "allow" });
+      expect(decision).toEqual({ kind: "allow", rule_fired: "default" });
     });
 
     it("returns reject when default is reject", async () => {
       const decision = await evaluatePolicy(baseInput, denyAllDefault, history);
-      expect(decision).toEqual({ kind: "reject", reason: "default_deny" });
+      expect(decision).toEqual({ kind: "reject", reason: "default_deny", rule_fired: "default" });
     });
 
     it("returns approval (with default timeout) when default is approval string", async () => {
       const policy: Policy = { rules: [], default: { approval: "callback" } };
       const decision = await evaluatePolicy(baseInput, policy, history);
-      expect(decision).toEqual({ kind: "approval", channel: "callback", timeout_seconds: 600 });
+      expect(decision).toEqual({
+        kind: "approval",
+        channel: "callback",
+        timeout_seconds: 600,
+        rule_fired: "default",
+      });
     });
 
     it("returns approval with custom timeout when default is structured approval", async () => {
@@ -102,7 +107,12 @@ describe("evaluatePolicy", () => {
         default: { approval: { via: "console", timeout_seconds: 120 } },
       };
       const decision = await evaluatePolicy(baseInput, policy, history);
-      expect(decision).toEqual({ kind: "approval", channel: "console", timeout_seconds: 120 });
+      expect(decision).toEqual({
+        kind: "approval",
+        channel: "console",
+        timeout_seconds: 120,
+        rule_fired: "default",
+      });
     });
   });
 
@@ -160,7 +170,7 @@ describe("evaluatePolicy", () => {
         default: { approve: true },
       };
       const d = await evaluatePolicy(baseInput, policy, history);
-      expect(d).toEqual({ kind: "reject", reason: "blocked" });
+      expect(d).toEqual({ kind: "reject", reason: "blocked", rule_fired: "rule[0]" });
     });
 
     it("does not match when recipient is not in the array", async () => {
@@ -595,7 +605,7 @@ describe("evaluatePolicy", () => {
         default: { reject: "default" },
       };
       const d = await evaluatePolicy(baseInput, policy, history);
-      expect(d).toEqual({ kind: "allow" });
+      expect(d).toEqual({ kind: "allow", rule_fired: "rule[0]" });
     });
 
     it("rejects first when hard caps go on top", async () => {
@@ -608,7 +618,7 @@ describe("evaluatePolicy", () => {
       };
       const big = { ...baseInput, amount: 50000 };
       const d = await evaluatePolicy(big, policy, history);
-      expect(d).toEqual({ kind: "reject", reason: "absolute_cap" });
+      expect(d).toEqual({ kind: "reject", reason: "absolute_cap", rule_fired: "rule[0]" });
     });
 
     it("allowlist short-circuit reaches before later rules", async () => {
@@ -620,7 +630,7 @@ describe("evaluatePolicy", () => {
         default: { reject: "default" },
       };
       const d = await evaluatePolicy(baseInput, policy, history);
-      expect(d).toEqual({ kind: "allow" });
+      expect(d).toEqual({ kind: "allow", rule_fired: "rule[0]" });
     });
   });
 });
