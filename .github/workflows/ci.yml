@@ -41,3 +41,22 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # The MCP server is a sibling package that depends on the main
+      # library via file: link. Build and test it on every PR too so
+      # we catch breaking changes to the public surface.
+      - name: MCP server - install
+        run: npm install
+        working-directory: mcp-server
+
+      - name: MCP server - typecheck
+        run: npm run typecheck
+        working-directory: mcp-server
+
+      - name: MCP server - build
+        run: npm run build
+        working-directory: mcp-server
+
+      - name: MCP server - test
+        run: npm test
+        working-directory: mcp-server
