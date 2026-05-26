@@ -1,0 +1,21 @@
+{
+  "name": "agent-sdk-demo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Claude agent autonomously paying for an x402 endpoint via blacktea.",
+  "scripts": {
+    "demo": "tsx demo.ts",
+    "demo:approval": "tsx demo.ts --policy policy-with-approval.json"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@nmrtn/blacktea": "file:../..",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  }
+}

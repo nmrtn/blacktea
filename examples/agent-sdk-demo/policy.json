@@ -1,0 +1,8 @@
+{
+  "rules": [
+    { "if": { "amount_gte": 5 }, "then": { "reject": "absolute_cap_5_usdc" } },
+    { "if": { "amount_lt": 0.1 }, "then": { "approve": true } },
+    { "if": { "amount_gte": 0.1 }, "then": { "approval": "console" } }
+  ],
+  "default": { "approval": "console" }
+}
