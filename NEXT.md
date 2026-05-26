@@ -99,16 +99,101 @@ npm run typecheck
 npm run build
 ```
 
-## Friction notes (fill in after the quickstart)
+## Friction notes (after the quickstart, 2026-05-26)
 
 ### x402 quickstart notes
 
-(Write here after step 1 above.)
+End-to-end payment settled on Base Sepolia. Tx hash:
+`0xeba79551339df19c2b83cf6673201bb3b3e93889c7772b93045bafb54fe9b2f9`
+
+Wallet used for the test (testnet only, do not reuse for real funds):
+`0xAB3b4e2B25b4598a598385afe741f2d9b55DfD99`
+
+Same wallet was both buyer and seller. Net cost was gas only.
 
 ### Surprises
 
-(Anything that did not match the docs.)
+1. **Two parallel package families** for x402 exist on npm.
+   - `x402-fetch`, `x402-axios`, `x402-express`, etc (no scope) are V1.
+   - `@x402/fetch`, `@x402/evm`, etc (scoped) are V2.
+   They use different protocol versions and **do not interoperate.** A V2
+   buyer fed a V1 response just returns the 402 without retrying.
+   Use V1 on both sides until the ecosystem fully migrates. Today
+   `x402-express` is still V1, so we match the buyer to V1 too.
 
-### Decisions for T5
+2. **The default testnet facilitator URL** is
+   `https://x402.org/facilitator`, not anything under coinbase.com.
+   x402-express uses it by default if you do not pass one. We had been
+   guessing the wrong URL based on the docs site domain.
 
-(Anything that informs how the x402 adapter should be written.)
+3. **The 402 response shape (V1)** has these fields the rail needs to
+   read in `preflight()`:
+   ```json
+   {
+     "x402Version": 1,
+     "accepts": [{
+       "scheme": "exact",
+       "network": "base-sepolia",
+       "maxAmountRequired": "10000",
+       "resource": "http://localhost:4021/protected",
+       "payTo": "0xAB3b...",
+       "maxTimeoutSeconds": 60,
+       "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+       "extra": {...}
+     }]
+   }
+   ```
+   `maxAmountRequired` is in token base units (10000 = 0.01 USDC since
+   USDC has 6 decimals). The asset field is the USDC contract address
+   on Base Sepolia.
+
+4. **The settlement header on the response is `x-payment-response`**.
+   Base64-encoded JSON with `{ success, transaction, network, payer }`.
+   That `transaction` field is the on-chain tx hash blacktea's Receipt
+   should record.
+
+### Decisions for T5 (the x402 rail adapter)
+
+These are now grounded, not guessed:
+
+1. **Use `x402-fetch@1` as the dependency.** The library exports two
+   things we need: `createSigner(network, privateKey)` and
+   `wrapFetchWithPayment(fetch, signer)`.
+
+2. **`x402Wallet({ privateKey, chain })` factory** returns a RailAdapter
+   that holds a Signer (built via `createSigner("base-sepolia", pk)`).
+
+3. **`preflight(input)` implementation:**
+   - Make an HTTP request to `input.url` with the unwrapped fetch
+   - If status is 402, parse the body, pull the first `accepts` entry
+   - Convert `maxAmountRequired` from token base units to a JS number
+     (using the asset's decimals; for USDC that is 6)
+   - Return `{ amount, currency: "USDC", recipient_wallet: payTo,
+     network, raw: <the full accepts[0]> }`
+
+4. **`settle(input, requirement, opts)` implementation:**
+   - Use `wrapFetchWithPayment(fetch, signer)` to call `input.url`
+   - That handles the signing + retry automatically
+   - On the 200 response, parse `x-payment-response` header
+   - Build a Receipt with `rail_charge_id = settlement.transaction`,
+     plus the standard fields
+   - Return `{ receipt, data: <response body> }`
+
+5. **Error handling:** if the response is 4xx other than 402, throw a
+   RailUnavailableError with the body. If signing throws, also
+   RailUnavailableError. NetworkError for fetch failures.
+
+6. **Currency decimals:** v1 hardcodes 6 for USDC on Base Sepolia.
+   When more networks/assets land in v2, this becomes a lookup.
+
+7. **`supports(input)`:** returns true if `input.url` starts with `http`.
+   That is the loose check. The real "does this URL support x402"
+   answer only comes back from preflight; the rail accepts any URL and
+   the 402 verifies fitness.
+
+### Cleanup before T5
+
+- Delete `examples/x402-quickstart/.env` (the testnet key is fine to
+  share but no reason to ship a working private key in git history).
+- Decide whether to keep the quickstart in the repo as the seed of T9
+  (the demo) or move it elsewhere.

@@ -9,12 +9,11 @@
     "buyer": "tsx buyer.ts"
   },
   "dependencies": {
-    "@x402/fetch": "*",
-    "@x402/evm": "*",
-    "x402-express": "*",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
-    "viem": "^2.21.0"
+    "viem": "^2.21.0",
+    "x402-express": "*",
+    "x402-fetch": "^1.2.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
