@@ -1,0 +1,37 @@
+{
+  "name": "@nmrtn/blacktea-mcp",
+  "version": "0.0.1",
+  "description": "MCP server exposing blacktea's pay tool to Claude Desktop, Cursor, and other MCP-aware clients.",
+  "license": "MIT",
+  "author": "Nicolas",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "blacktea-mcp": "./dist/index.js"
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@nmrtn/blacktea": "file:.."
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  },
+  "keywords": ["mcp", "model-context-protocol", "ai-agents", "x402", "payments", "blacktea"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nmrtn/blacktea.git",
+    "directory": "mcp-server"
+  },
+  "homepage": "https://github.com/nmrtn/blacktea#readme"
+}

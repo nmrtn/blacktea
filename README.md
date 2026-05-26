@@ -119,8 +119,27 @@ Run `blacktea --help` for the full surface.
 
 ### As an MCP server (Claude Desktop, Cursor chat mode)
 
-On the roadmap for v0.3. One config line in your MCP-aware client will
-expose `pay` as a tool with no code on your side.
+Drop one block into your MCP-aware client and the assistant gains a
+typed `pay` tool with no code on your side:
+
+```json
+{
+  "mcpServers": {
+    "blacktea": {
+      "command": "npx",
+      "args": ["-y", "@nmrtn/blacktea-mcp"],
+      "env": {
+        "EVM_PRIVATE_KEY": "0x...",
+        "BLACKTEA_POLICY": "/path/to/policy.json"
+      }
+    }
+  }
+}
+```
+
+Restart your client. Ask "use the pay tool to fetch \<some x402 URL\>"
+and watch the protocol fire. See [`mcp-server/README.md`](mcp-server/README.md)
+for the full setup including Cursor and other clients.
 
 ## A policy file looks like this
 
