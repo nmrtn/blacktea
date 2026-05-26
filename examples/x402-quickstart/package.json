@@ -1,0 +1,25 @@
+{
+  "name": "x402-quickstart",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Truth-check the x402 protocol before building the blacktea x402 rail (T5).",
+  "scripts": {
+    "seller": "tsx seller.ts",
+    "buyer": "tsx buyer.ts"
+  },
+  "dependencies": {
+    "@x402/fetch": "*",
+    "@x402/evm": "*",
+    "x402-express": "*",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^20.14.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  }
+}
