@@ -22,6 +22,6 @@ console.log("Address:    ", account.address);
 console.log("\nPaste into examples/x402-quickstart/.env:");
 console.log(`  EVM_PRIVATE_KEY=${privateKey}`);
 console.log(`  SELLER_RECEIVING_ADDRESS=${account.address}`);
-console.log("\nPaste the address into the CDP faucet's \"Send to\" field.");
+console.log('\nPaste the address into the CDP faucet\'s "Send to" field.');
 console.log("Request both ETH (0.0001 is enough) AND USDC (the faucet token dropdown).");
 console.log("\nThis wallet is testnet-only. Do not send real funds to it.\n");

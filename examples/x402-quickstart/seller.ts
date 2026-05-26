@@ -13,7 +13,8 @@ dotenv.config();
 
 const port = Number(process.env.SELLER_PORT ?? 4021);
 const recipient = process.env.SELLER_RECEIVING_ADDRESS as `0x${string}` | undefined;
-const facilitatorUrl = (process.env.FACILITATOR_URL ?? "https://x402.coinbase.com") as `${string}://${string}`;
+const facilitatorUrl = (process.env.FACILITATOR_URL ??
+  "https://x402.coinbase.com") as `${string}://${string}`;
 
 if (!recipient || !recipient.startsWith("0x")) {
   console.error("SELLER_RECEIVING_ADDRESS is missing or invalid. Set it in .env.");
@@ -47,6 +48,6 @@ app.get("/protected", (_req, res) => {
 
 app.listen(port, () => {
   console.log(`x402 seller listening on http://localhost:${port}`);
-  console.log(`Try in another terminal:  npm run buyer`);
+  console.log("Try in another terminal:  npm run buyer");
   console.log(`Or with curl (will get 402): curl http://localhost:${port}/protected`);
 });
