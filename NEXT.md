@@ -48,14 +48,24 @@ src/adapters/index.ts    ← public export surface @nmrtn/blacktea/adapters
 test/rails/x402.test.ts  ← unit tests against a mocked HTTP client
 ```
 
-The adapter's `pay()` method will:
-1. POST to the URL the agent gave us.
-2. If it returns 402, parse the payment requirements.
-3. Sign a payment with the wallet.
-4. Retry the POST with the X-PAYMENT header.
-5. Return a Receipt.
+The `RailAdapter` interface is now in two halves (preflight + settle):
 
-Most of the structure already exists in the `RailAdapter` shape in `src/types.ts`. You are filling in the body.
+- **`preflight(input: PayInput)`**: make the initial HTTP request to the URL.
+  If the server returns 402, parse the `PAYMENT-REQUIRED` header into a
+  `PaymentRequirement` (amount, currency, recipient_wallet, network). Return it.
+- **`settle(input, requirement, opts)`**: sign the payment with the wallet, retry
+  the request with `PAYMENT-SIGNATURE`, parse the server's response body and
+  return `{ receipt, data }`. The factory writes receipt to history; data is
+  whatever the API returned (chat completion, dataset, etc).
+
+Verify after the quickstart that the V2 header names and payload shapes match
+what x402-axios actually uses. If you decide to wrap x402-axios under the hood,
+note that its `withPaymentInterceptor` signs automatically; you need to call it
+in two phases or implement the protocol manually so the policy evaluator gets a
+chance to inspect the amount before signing.
+
+Most of the structure already exists in the `RailAdapter` shape in `src/types.ts`.
+You are filling in the body of preflight + settle.
 
 After T5, T7 (mock facilitator for tests), T8 (full PaymentIntent state machine), T9 (Claude Agent SDK demo).
 
