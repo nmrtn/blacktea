@@ -13,13 +13,25 @@
  */
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const SERVER_PATH = join(process.cwd(), "dist/index.js");
-const TEST_PK = "0xREDACTED_LEAKED_TESTNET_KEY_DO_NOT_REUSE_____________________________";
+
+// Ephemeral test wallet, generated fresh at every test run. The MCP server's
+// startup only checks that EVM_PRIVATE_KEY is 0x-prefixed and constructs the
+// x402 adapter; the x402 signer is initialised lazily (inside ensureSigner)
+// and the test suite never exercises a happy-path pay call. So any well-formed
+// 32-byte hex key is sufficient.
+//
+// We hardcoded a real testnet key here in an earlier revision. That was a
+// /cso finding: even an "obviously" testnet wallet leaks operator metadata
+// once the repo is public, and humans WILL accidentally fund the address on
+// mainnet later. Generate it. Don't ship it.
+const TEST_PK = `0x${randomBytes(32).toString("hex")}`;
 
 interface JsonRpcResponse {
   jsonrpc: string;

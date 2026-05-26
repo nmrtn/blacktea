@@ -119,7 +119,34 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "pay") {
     const url = typeof args.url === "string" ? args.url : "";
     const intent = typeof args.intent === "string" ? args.intent : "";
-    const maxAmount = typeof args.max_amount === "number" ? args.max_amount : undefined;
+    // Strict shape check. typeof null !== "number" already, but be explicit:
+    // null, NaN, ±Infinity, 0, and negatives must all fail loudly rather
+    // than silently drop the cap (mirror of the CLI fix).
+    let maxAmount: number | undefined;
+    if (args.max_amount !== undefined && args.max_amount !== null) {
+      if (
+        typeof args.max_amount !== "number" ||
+        !Number.isFinite(args.max_amount) ||
+        args.max_amount <= 0
+      ) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                ok: false,
+                error: {
+                  code: "invalid_input",
+                  message: `max_amount must be a positive finite number, got: ${JSON.stringify(args.max_amount)}`,
+                },
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      maxAmount = args.max_amount;
+    }
 
     if (!url || !intent) {
       return {

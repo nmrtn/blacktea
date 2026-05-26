@@ -152,6 +152,74 @@ describe("CLI", () => {
       expect(err.error.code).toBe("config_error");
     });
 
+    // Regression: the CLI used to silently drop --max-amount when the value
+    // parsed to NaN (e.g. user wrote "1usd" or a shell variable expanded to
+    // empty), letting the payment proceed with no cap. The strict parser
+    // must exit 7 (validation_error) before any rail or policy work runs.
+    // See .gstack/security-reports/ for the audit that found this.
+    for (const bad of ["notanumber", "", "0", "-1", "1usd"]) {
+      it(`rejects --max-amount ${JSON.stringify(bad)} with exit 7`, () => {
+        const result = spawnSync(
+          "npx",
+          [
+            "tsx",
+            CLI_ENTRY,
+            "pay",
+            "--url",
+            "https://x.com",
+            "--intent",
+            "test",
+            "--max-amount",
+            bad,
+          ],
+          {
+            encoding: "utf-8",
+            cwd: REPO_ROOT,
+            env: {
+              ...process.env,
+              EVM_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000001",
+            },
+          },
+        );
+        expect(result.status).toBe(7);
+        const err = JSON.parse(result.stderr ?? "");
+        expect(err.error.code).toBe("invalid_input");
+        expect(err.error.message).toMatch(/max-amount/);
+      });
+    }
+
+    it("accepts a positive --max-amount value", () => {
+      // Use a non-resolving host so the call fails AFTER input parsing
+      // succeeds. We are only checking that the parser does NOT exit 7.
+      const result = spawnSync(
+        "npx",
+        [
+          "tsx",
+          CLI_ENTRY,
+          "pay",
+          "--url",
+          "http://127.0.0.1:1",
+          "--intent",
+          "test",
+          "--max-amount",
+          "1.5",
+          "--policy",
+          "test/fixtures/cookbook/01-auto-approve.json",
+        ],
+        {
+          encoding: "utf-8",
+          cwd: REPO_ROOT,
+          env: {
+            ...process.env,
+            EVM_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000001",
+          },
+        },
+      );
+      // Whatever happens after parsing (rail_unavailable, network error,
+      // etc.), the exit code must NOT be 7 — the parser accepted the value.
+      expect(result.status).not.toBe(7);
+    });
+
     it("rejects when policy file is missing", () => {
       const result = spawnSync(
         "npx",

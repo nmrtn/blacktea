@@ -1,0 +1,12 @@
+# GitHub CODEOWNERS — pull request review requirements.
+#
+# Format: <path-pattern> <owner1> <owner2> ...
+# Last matching rule wins.
+# See https://docs.github.com/en/repositories/managing-your-repositories-settings-and-customizations/customizing-your-repository/about-code-owners
+#
+# Workflow + CI changes need maintainer review. Once branch protection
+# is enabled with "require review from Code Owners", a contributor PR
+# that touches .github/ will block until the maintainer signs off.
+# This is the latent-risk fix from /cso finding #3.
+
+.github/ @nmrtn

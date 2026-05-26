@@ -51,7 +51,28 @@ program
   .description("Make a paid HTTP request. Prints { receipt, data } as JSON on success.")
   .requiredOption("-u, --url <url>", "the URL of the paid endpoint")
   .requiredOption("-i, --intent <text>", "natural-language reason for the payment")
-  .option("-m, --max-amount <amount>", "safety cap (positive number)", Number.parseFloat)
+  .option(
+    "-m, --max-amount <amount>",
+    "safety cap (positive number)",
+    // Strict parser. Two JS footguns to dodge:
+    //   1. Number.parseFloat("1usd") returns 1 (reads as much as it can),
+    //      which would silently accept garbage suffixes. We use Number()
+    //      instead — it requires the WHOLE string to be a valid number.
+    //   2. The previous truthy check on the result dropped NaN and 0 silently,
+    //      a fail-open of the user's safety cap. Exit non-zero on any
+    //      non-positive-finite value.
+    (v: string): number => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) {
+        printError({
+          code: "invalid_input",
+          message: `--max-amount must be a positive number, got: ${JSON.stringify(v)}`,
+        });
+        process.exit(7);
+      }
+      return n;
+    },
+  )
   .option("-p, --policy <path>", "path to policy.json", "./policy.json")
   .option("--chain <chain>", "EVM chain", "base-sepolia")
   .option("--key-env <name>", "env var holding the wallet private key", "EVM_PRIVATE_KEY")
@@ -82,7 +103,10 @@ program
       const intent = await pay({
         url: opts.url,
         intent: opts.intent,
-        ...(opts.maxAmount ? { max_amount: opts.maxAmount } : {}),
+        // Explicit-undefined check, NOT truthy. opts.maxAmount === 0 would
+        // never reach here (the strict parser above rejects it), but the
+        // explicit check is what we want any future reader to see.
+        ...(opts.maxAmount !== undefined ? { max_amount: opts.maxAmount } : {}),
       });
       console.log(
         JSON.stringify(
