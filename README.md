@@ -85,13 +85,42 @@ autonomously: [`0x1417b91e...`](https://sepolia.basescan.org/tx/0x1417b91ee70aa8
 
 ## Plug it into your agent
 
-`pay()` is a normal async TypeScript function. Wire it into your LLM as a
-tool: register it in your tools array, route the tool call into `pay()`,
-send the returned `{ data, receipt }` back as the tool result. See
-`examples/agent-sdk-demo/demo.ts` for the full pattern.
+Three integration shapes, same library underneath.
 
-A native MCP server (one-line install for Claude Desktop, Cursor, and any
-MCP-aware agent) is on the roadmap for v0.2.
+### As a TypeScript SDK (any LLM with tool calling)
+
+`pay()` is a normal async function. Register it as a tool in your LLM
+loop, route the tool call into `pay()`, send the returned
+`{ data, receipt }` back as the tool result. See
+`examples/agent-sdk-demo/demo.ts` for the full Anthropic SDK pattern.
+
+### As a CLI (Claude Code, Cursor, Cline, Aider, OpenClaw, Hermes, Devin)
+
+Any agent platform with shell access can call blacktea directly:
+
+```bash
+# Make a paid request
+EVM_PRIVATE_KEY=0x... blacktea pay \
+  --url https://api.example.com/paid \
+  --intent "fetch the report" \
+  --max-amount 1
+
+# Inspect what your agent spent
+blacktea audit show --last 10
+
+# Sanity-check your policy
+blacktea policy validate ./policy.json
+blacktea policy test ./policy.json --amount 50 --url https://x.com
+```
+
+Output is JSON by default so the agent can parse it; exit codes are
+distinct per error class (3=policy denied, 4=approval timeout, etc).
+Run `blacktea --help` for the full surface.
+
+### As an MCP server (Claude Desktop, Cursor chat mode)
+
+On the roadmap for v0.3. One config line in your MCP-aware client will
+expose `pay` as a tool with no code on your side.
 
 ## A policy file looks like this
 

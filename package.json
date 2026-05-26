@@ -1,12 +1,15 @@
 {
   "name": "@nmrtn/blacktea",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Spending controls for AI agents paying online.",
   "license": "MIT",
   "author": "Nicolas",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "blacktea": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -19,7 +22,7 @@
   },
   "files": ["dist", "README.md", "LICENSE"],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -32,6 +35,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "commander": "^14.0.3",
     "lru-cache": "^11.0.0",
     "x402-fetch": "^1.2.0",
     "zod": "^3.23.0"
