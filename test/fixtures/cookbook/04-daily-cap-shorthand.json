@@ -1,0 +1,4 @@
+{
+  "rules": [{ "if": { "amount_today_gte": 500 }, "then": { "reject": "daily_cap" } }],
+  "default": { "approve": true }
+}

@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+
+# build
+dist/
+*.tsbuildinfo
+
+# test + coverage
+coverage/
+.vitest-cache/
+
+# library state at runtime (history, etc)
+.blacktea/
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# system
+.DS_Store
+Thumbs.db
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+npm-debug.log*

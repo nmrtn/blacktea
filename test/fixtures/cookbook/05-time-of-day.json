@@ -1,0 +1,14 @@
+{
+  "time_zone": "Europe/Paris",
+  "rules": [
+    {
+      "if": {
+        "all": [{ "time_of_day_between": ["22:00", "08:00"] }, { "amount_gte": 20 }]
+      },
+      "then": { "approval": "callback" }
+    },
+    { "if": { "amount_lt": 100 }, "then": { "approve": true } },
+    { "if": { "amount_gte": 100 }, "then": { "approval": "callback" } }
+  ],
+  "default": { "approval": "callback" }
+}

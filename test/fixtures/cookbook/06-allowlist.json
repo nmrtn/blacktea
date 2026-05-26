@@ -1,0 +1,12 @@
+{
+  "rules": [
+    { "if": { "wallet_in": "./blocklists/sanctioned.txt" }, "then": { "reject": "sanctioned" } },
+
+    { "if": { "wallet_in": "./allowlists/trusted-wallets.txt" }, "then": { "approve": true } },
+    { "if": { "url_starts_with": "https://api.openai.com" }, "then": { "approve": true } },
+
+    { "if": { "amount_lt": 10 }, "then": { "approve": true } },
+    { "if": { "amount_gte": 100 }, "then": { "approval": "callback" } }
+  ],
+  "default": { "approval": "callback" }
+}

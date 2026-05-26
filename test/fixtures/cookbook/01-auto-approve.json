@@ -1,0 +1,4 @@
+{
+  "rules": [{ "if": { "amount_lt": 10 }, "then": { "approve": true } }],
+  "default": { "approval": "callback" }
+}

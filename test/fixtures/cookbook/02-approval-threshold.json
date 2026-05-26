@@ -1,0 +1,4 @@
+{
+  "rules": [{ "if": { "amount_gte": 100 }, "then": { "approval": "callback" } }],
+  "default": { "approve": true }
+}

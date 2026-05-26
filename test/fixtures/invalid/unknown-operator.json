@@ -1,0 +1,4 @@
+{
+  "rules": [{ "if": { "amount_between": [10, 100] }, "then": { "approve": true } }],
+  "default": { "approve": true }
+}

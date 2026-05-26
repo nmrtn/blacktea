@@ -1,0 +1,16 @@
+{
+  "rules": [
+    { "if": { "amount_gte": 10000 }, "then": { "reject": "absolute_cap" } },
+    { "if": { "wallet_in": "./blocklists/sanctioned.txt" }, "then": { "reject": "sanctioned" } },
+
+    {
+      "if": { "intent_contains_any": ["transfer", "investment", "loan", "donation"] },
+      "then": { "approval": "callback" }
+    },
+
+    { "if": { "wallet_in": "./allowlists/trusted-wallets.txt" }, "then": { "approve": true } },
+    { "if": { "amount_lt": 10 }, "then": { "approve": true } },
+    { "if": { "amount_gte": 100 }, "then": { "approval": "callback" } }
+  ],
+  "default": { "approval": "callback" }
+}

@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "if": {
+        "would_spend": {
+          "by": "wallet",
+          "window_hours": 24,
+          "gte": 100
+        }
+      },
+      "then": { "reject": "per_wallet_cap" }
+    }
+  ],
+  "default": { "approve": true }
+}

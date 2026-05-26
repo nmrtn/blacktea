@@ -1,0 +1,10 @@
+{
+  "rules": [
+    { "if": { "wallet_in": "./blocklists/sanctioned.txt" }, "then": { "reject": "sanctioned" } },
+    {
+      "if": { "url_starts_with": "https://sketchy.example.com" },
+      "then": { "reject": "blocked_domain" }
+    }
+  ],
+  "default": { "approve": true }
+}

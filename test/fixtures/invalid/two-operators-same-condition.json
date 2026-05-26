@@ -1,0 +1,4 @@
+{
+  "rules": [{ "if": { "amount_lt": 10, "amount_gte": 5 }, "then": { "approve": true } }],
+  "default": { "approve": true }
+}

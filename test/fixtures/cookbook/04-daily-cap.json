@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {
+      "if": { "would_spend": { "window_hours": 24, "gte": 500 } },
+      "then": { "reject": "daily_cap" }
+    }
+  ],
+  "default": { "approve": true }
+}
