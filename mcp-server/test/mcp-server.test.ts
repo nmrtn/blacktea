@@ -173,6 +173,30 @@ describe("blacktea-mcp server", () => {
       });
       expect(server.stderr).toMatch(/@nmrtn\/blacktea-mcp v\d+\.\d+\.\d+ ready/);
     });
+
+    // Regression: the MCP server previously resolved BLACKTEA_HISTORY for
+    // the audit_query READ path but did NOT pass `history` to blacktea(),
+    // so pay() wrote to the SDK's cwd-resolved default while audit_query
+    // read from the env-resolved path. Two different files, audit returned
+    // stale or empty data.
+    //
+    // Fix: construct a FileBackedHistoryStore at historyPath and pass it
+    // to blacktea(). Both sides now use the same file by construction.
+    //
+    // This test asserts the banner reports the env-set path, which is
+    // proof that the path is at least being THREADED through to startup.
+    // The shared-file invariant itself is enforced by the code (one path
+    // variable, one store, passed to both consumers).
+    it("threads BLACKTEA_HISTORY through to the runtime (read + write paths)", async () => {
+      const customHistory = join(tmpDir, "custom-history.jsonl");
+      server = await startServer({
+        EVM_PRIVATE_KEY: TEST_PK,
+        BLACKTEA_POLICY: policyPath,
+        BLACKTEA_HISTORY: customHistory,
+      });
+      expect(server.stderr).toMatch(/@nmrtn\/blacktea-mcp v\d+\.\d+\.\d+ ready/);
+      expect(server.stderr).toContain(`history=${customHistory}`);
+    });
   });
 
   describe("MCP protocol", () => {

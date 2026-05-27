@@ -23,7 +23,7 @@ import { resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { blacktea, isBlackteaError } from "@nmrtn/blacktea";
+import { FileBackedHistoryStore, blacktea, isBlackteaError } from "@nmrtn/blacktea";
 import { x402Wallet } from "@nmrtn/blacktea/adapters";
 
 const VERSION = "0.0.2";
@@ -52,9 +52,19 @@ if (!existsSync(policyPath)) {
 
 // ---------- wire blacktea ----------
 
+// Explicitly construct the history store at historyPath so pay() writes
+// and audit_query reads use the SAME file. Without this, the SDK's default
+// branch resolves "./.blacktea/history.jsonl" from process.cwd() (whatever
+// directory Claude Desktop / Cursor / etc spawned us in — often "/" or
+// "$HOME", never predictable) while audit_query reads the env-resolved
+// historyPath. The two would diverge silently and audit_query would return
+// "no history yet" while payments were being recorded somewhere else.
+const history = new FileBackedHistoryStore({ path: historyPath });
+
 const pay = blacktea({
   source: x402Wallet({ privateKey: pk, chain }),
   policy: policyPath,
+  history,
   audit: () => {
     // The MCP transport owns stdout; any audit prints would corrupt the
     // protocol stream. Stay quiet here. The history file is the audit.
@@ -266,4 +276,6 @@ await server.connect(transport);
 
 // Stderr-only banner so the MCP client can see we are up without
 // corrupting the stdio protocol on stdout.
-console.error(`${PACKAGE_NAME} v${VERSION} ready. chain=${chain} policy=${policyPath}`);
+console.error(
+  `${PACKAGE_NAME} v${VERSION} ready. chain=${chain} policy=${policyPath} history=${historyPath}`,
+);
