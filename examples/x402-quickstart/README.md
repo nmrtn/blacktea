@@ -4,8 +4,6 @@ The truth check before T5. Spins up a local seller and a buyer that pays it
 0.01 USDC over Base Sepolia testnet. If this runs end to end, the protocol
 works the way the docs claim and we know how to wire it into blacktea.
 
-If it does not, the friction notes at the bottom of `../NEXT.md` get filled in.
-
 Estimated time: 30-45 minutes including signup.
 
 ## Prereqs you need to do once
@@ -86,8 +84,6 @@ Notes for when you start the rail adapter:
 4. **What fails.** Wrong network. Missing funds. Wrong facilitator URL.
    Whatever you hit during the quickstart, capture it. Those are the
    `RailUnavailableError` messages T5 will produce.
-
-Write any surprises into `NEXT.md` under the "Friction notes" section.
 
 ## When you are done
 
