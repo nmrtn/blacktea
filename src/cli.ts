@@ -36,7 +36,7 @@ import { PolicySchema } from "./policy/schema.js";
 import { x402Wallet } from "./rails/x402.js";
 import type { HistoryQuery } from "./types.js";
 
-const VERSION = "0.0.3";
+const VERSION = "0.0.4";
 
 const program = new Command();
 program

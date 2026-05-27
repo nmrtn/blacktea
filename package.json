@@ -1,6 +1,6 @@
 {
   "name": "@nmrtn/blacktea",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Spending controls for AI agents paying online.",
   "license": "MIT",
   "author": "Nicolas",

@@ -26,7 +26,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { FileBackedHistoryStore, blacktea, isBlackteaError } from "@nmrtn/blacktea";
 import { x402Wallet } from "@nmrtn/blacktea/adapters";
 
-const VERSION = "0.0.2";
+const VERSION = "0.0.3";
 const PACKAGE_NAME = "@nmrtn/blacktea-mcp";
 
 // ---------- config from env ----------

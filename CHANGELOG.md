@@ -8,6 +8,53 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
+## `@nmrtn/blacktea` v0.0.4 — 2026-05-27
+
+Adds `mockWallet`, a no-network rail adapter. The reason this exists:
+trying the library used to require a Coinbase Developer Platform
+account, a Base Sepolia wallet, ETH for gas, USDC from a faucet, and
+a running x402 endpoint. That's fine for production but brutal for
+"let me see if this is real."
+
+### Added
+
+- `mockWallet({ amount, currency, ... })` exported from
+  `@nmrtn/blacktea/adapters`. A `RailAdapter` that does no network and
+  no signing. `preflight` returns a configurable `PaymentRequirement`,
+  `settle` returns a synthetic `Receipt` marked `simulated: true`. The
+  policy engine still fires, the approval callback still runs, the
+  audit log still writes. Everything except the actual signing.
+  Useful for local dev, demos, CI, and reading the policy you just
+  wrote without committing to spending money.
+
+### Fixed
+
+- `VERSION` exported from `@nmrtn/blacktea` was stale at `"0.0.1"` since
+  the initial release. Now matches `package.json`.
+
+## `@nmrtn/blacktea-mcp` v0.0.3 — 2026-05-27
+
+### Fixed
+
+- The MCP server now passes a `FileBackedHistoryStore` constructed at
+  the resolved `BLACKTEA_HISTORY` path to the `blacktea()` factory.
+  Previously, `audit_query` read from the env-resolved path while
+  `pay()` wrote to the SDK's default `./.blacktea/history.jsonl`
+  (resolved against whatever `cwd` the MCP client spawned the server
+  in — usually `/` or `$HOME`, never predictable). The two diverged
+  silently and `audit_query` returned stale or empty data. Now one
+  path, one store, both consumers use the same file.
+
+### Changed
+
+- Startup banner now reports the resolved history path:
+  `… ready. chain=base-sepolia policy=… history=…`. Helps when
+  debugging MCP integrations to confirm the env vars actually
+  threaded through.
+- Dependency on `@nmrtn/blacktea` bumped to `^0.0.4`.
+
+---
+
 ## `@nmrtn/blacktea` v0.0.3 — 2026-05-26
 
 Security patch. Run a `/cso` self-audit, found a fail-open on the CLI, fixed it.

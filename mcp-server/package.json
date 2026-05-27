@@ -1,6 +1,6 @@
 {
   "name": "@nmrtn/blacktea-mcp",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "MCP server exposing blacktea's pay tool to Claude Desktop, Cursor, and other MCP-aware clients.",
   "license": "MIT",
   "author": "Nicolas",
@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@nmrtn/blacktea": "^0.0.3"
+    "@nmrtn/blacktea": "^0.0.4"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
