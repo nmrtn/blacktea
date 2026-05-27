@@ -7,3 +7,6 @@
 
 export { x402Wallet } from "../rails/x402.js";
 export type { X402WalletConfig } from "../rails/x402.js";
+
+export { mockWallet } from "../rails/mock.js";
+export type { MockWalletConfig } from "../rails/mock.js";

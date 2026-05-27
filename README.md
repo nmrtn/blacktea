@@ -11,7 +11,7 @@ import { x402Wallet } from "@nmrtn/blacktea/adapters";
 const pay = blacktea({
   policy: "./policy.json",
   source: x402Wallet({
-    privateKey: process.env.AGENT_WALLET_KEY,
+    privateKey: process.env.EVM_PRIVATE_KEY,
     chain: "base-sepolia",
   }),
 });
@@ -54,20 +54,42 @@ Today people patch this together themselves with YAML configs, Slack webhooks, a
 - Audit log of every payment, including the agent's own stated reason for spending it.
 - Works with x402 today. Architecture is rail-pluggable so AP2, ACP, SEPA, ACH, and card adapters can be added later as separate packages.
 
-## What it does not do
-
-- Pay merchants that do not speak x402 (most of the regular web, in 2026). Wait for AP2 / ACP / SEPA adapters or write your own.
-- Issue wallets or hold balances. Bring your own x402-compatible wallet.
-- Handle subscriptions or recurring billing.
-- Run on the blockchain itself. The library is plain TypeScript, the x402 rail just happens to settle on-chain.
-
 ## Install
 
 ```bash
 npm install @nmrtn/blacktea
 ```
 
-## Try it
+## Try it in 30 seconds, no wallet needed
+
+A `mockWallet` adapter ships in the same package. No x402 server, no USDC,
+no testnet. Useful for trying the policy engine end to end before wiring
+up a real wallet.
+
+```typescript
+import { blacktea } from "@nmrtn/blacktea";
+import { mockWallet } from "@nmrtn/blacktea/adapters";
+
+const pay = blacktea({
+  policy: "./policy.json",
+  source: mockWallet({ amount: 0.5 }), // pretend the server asks for 0.5 USDC
+});
+
+const intent = await pay({
+  url: "https://example.com/api",
+  intent: "smoke test the policy",
+});
+
+console.log(intent.receipt);
+// { id: "mock_<ts>", amount: 0.5, currency: "USDC", rail: "mock",
+//   simulated: true, ... }
+```
+
+The receipt is marked `simulated: true`. The audit log still writes. The
+policy engine still fires. Approval callbacks still get called. Swap
+`mockWallet` for `x402Wallet` when you're ready to spend real money.
+
+## Try it for real
 
 Two runnable examples ship in the repo:
 
@@ -85,7 +107,13 @@ autonomously: [`0x1417b91e...`](https://sepolia.basescan.org/tx/0x1417b91ee70aa8
 
 ## Plug it into your agent
 
-Three integration shapes, same library underneath.
+Three integration shapes, same library underneath. The reason all three
+ship in one package rather than three separate projects: spending policy
+belongs in one place. If your agent talks to you through a chat MCP, runs
+a shell-mode CLI from Claude Code, AND has a TypeScript runtime calling
+`pay()` directly, you want one policy.json governing all of them. One
+audit log. One source of truth for "what is this agent allowed to spend?"
+Splitting that across three libraries is the bug.
 
 ### As a TypeScript SDK (any LLM with tool calling)
 
@@ -156,15 +184,79 @@ for the full setup including Cursor and other clients.
 
 More examples in [docs/policy-cookbook.md](docs/policy-cookbook.md).
 
+## Not for
+
+- Issuing wallets or holding balances. Bring your own wallet for whichever
+  rail you're using.
+- Subscriptions or recurring billing.
+- The seller side of x402. blacktea is buyer-side — it protects the agent
+  with the wallet, not the API accepting payments. Use `x402-express` or
+  similar for the seller.
+
+## Rails
+
+| Rail | Status | Package |
+|---|---|---|
+| **x402** (USDC on Base) | Shipped in v0.0.x | `@nmrtn/blacktea/adapters` |
+| **mock** (no network) | Shipped in v0.0.x | `@nmrtn/blacktea/adapters` |
+| AP2 | Planned, design open | — |
+| ACP | Planned, design open | — |
+| SEPA push | Planned, design open | — |
+| ACH | Planned, design open | — |
+| Cards (Stripe Issuing auth-webhook) | Planned, deferred to v1.5+ | — |
+
+The `RailAdapter` interface is two methods (`preflight`, `settle`) plus
+`name` and `supports`. Adding a rail is a separate adapter package; the
+core never changes. See `src/rails/x402.ts` for the reference shape and
+`src/rails/mock.ts` for the no-network version.
+
+If you maintain or care about any of the planned rails: open an issue
+describing the shape (request-response? push? webhook-driven?) and what
+the receipt should carry. Real input from someone using the rail beats
+spec reading every time.
+
+## Contributing
+
+Contributions welcome. Three high-value places to land work right now:
+
+- **Rail adapters.** If you want SEPA, ACP, AP2, or a custom rail, the
+  interface is small and the existing `x402Wallet` shows the pattern. A
+  rail can ship as a sibling npm package (like `@nmrtn/blacktea-mcp`) or
+  go in `src/rails/` if it's broadly useful.
+- **Policy DSL feedback.** The DSL is the part most likely to change.
+  Open an issue with the rule shape your agent actually needs.
+- **Bug reports with reproducible cases.** Stack trace, version,
+  minimal policy.json that triggers it. The faster a bug is reproducible
+  the faster it gets fixed.
+
+To get set up locally:
+
+```bash
+git clone https://github.com/nmrtn/blacktea.git
+cd blacktea
+npm install
+npm test          # 160+ tests, ~10s
+npm run lint
+npm run typecheck
+npm run build
+```
+
+The MCP server is a sibling package in `mcp-server/`. It depends on the
+main library; build the main library first, then `cd mcp-server && npm
+install && npm test`.
+
+Code style is enforced by Biome (`npm run lint:fix` formats automatically).
+Tests use Vitest. CI runs everything on every push and PR.
+
+For bigger design questions — a new policy operator, a new rail, a
+breaking change — open an issue first. Better to argue about the shape
+in a thread than in a PR review.
+
 ## Status
 
-Early. v0.1.x. The API will change before 1.0.
-
-If your agent uses x402 and you have felt this pain, open an issue and tell me what your policy needs to look like. That is the single most useful thing anyone can do right now.
-
-## Why open source
-
-Open source means you do not have to trust me. The code is right there. If something does not fit, patch it. Or skip me entirely and host the whole thing on your own machine.
+Early. v0.0.x. The API will change before 1.0. Lockstep with feedback
+from real users; if your agent uses x402 and you have felt this pain,
+open an issue.
 
 ## License
 
