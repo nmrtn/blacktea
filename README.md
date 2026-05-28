@@ -1,8 +1,19 @@
 # blacktea
 
 [![CI](https://github.com/nmrtn/blacktea/actions/workflows/ci.yml/badge.svg)](https://github.com/nmrtn/blacktea/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40nmrtn%2Fblacktea?label=%40nmrtn%2Fblacktea)](https://www.npmjs.com/package/@nmrtn/blacktea)
+[![npm](https://img.shields.io/npm/v/%40nmrtn%2Fblacktea-mcp?label=%40nmrtn%2Fblacktea-mcp)](https://www.npmjs.com/package/@nmrtn/blacktea-mcp)
 
 Spending controls for AI agents paying online.
+
+<!-- DEMO: drop the recorded Telegram demo at docs/demo.gif (replace this placeholder). -->
+![blacktea demo: a personal agent asks before it spends, then settles on-chain after you approve](docs/demo.gif)
+
+> Above: a personal agent (Hermes, over Telegram) is asked to buy a paid
+> report. blacktea holds the payment, the agent asks for approval in the chat,
+> and only after you say "yes" does it settle: 0.01 USDC on Base Sepolia. That
+> settlement is real and verifiable on-chain:
+> [`0x11f759ad…`](https://sepolia.basescan.org/tx/0x11f759ad2f5dc6c7153454ab75c00e85f2791ea4aa6388ea47e76a19ed4632a3).
 
 ```typescript
 import { blacktea } from "@nmrtn/blacktea";
@@ -16,13 +27,13 @@ const pay = blacktea({
   }),
 });
 
-// Small API call. Server asks 4 USDC. Under the policy threshold.
-// Library signs the payment, retries, returns the chat completion.
+// Small paid API call. Server asks 4 USDC, under the policy threshold.
+// blacktea signs the x402 payment, retries, returns the data.
 const { data, receipt } = await pay({
-  url: "https://api.openai.com/v1/chat",
-  intent: "buy GPT-4 tokens",
+  url: "https://api.example.com/v1/inference",
+  intent: "premium model inference for the research agent",
 });
-// data is the chat completion. receipt is the payment record.
+// data is the API response. receipt is the payment record.
 
 // Premium dataset. Server asks 1200 USDC. Approval rule fires.
 // Your onApprovalNeeded function is called. You tap approve in Slack.
@@ -41,6 +52,18 @@ await pay({
 });
 ```
 
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [What it does](#what-it-does)
+- [Install](#install)
+- [Try it in 30 seconds](#try-it-in-30-seconds-no-wallet-needed)
+- [Try it for real](#try-it-for-real)
+- [Plug it into your agent](#plug-it-into-your-agent) (SDK, CLI, MCP)
+- [Policy files](#a-policy-file-looks-like-this)
+- [Rails](#rails)
+- [Contributing](#contributing)
+
 ## Why this exists
 
 If your agent has a wallet, you have a problem. You cannot sit there watching it. You also cannot let it loose with zero controls.
@@ -52,7 +75,7 @@ Today people patch this together themselves with YAML configs, Slack webhooks, a
 - Spending limits. Write a rule for any shape you need: per call, per day, by recipient, by intent, by time of day, anything you can express in the policy DSL.
 - Approval flow when a rule says "ask the human first."
 - Audit log of every payment, including the agent's own stated reason for spending it.
-- Works with x402 today. Architecture is rail-pluggable so AP2, ACP, SEPA, ACH, and card adapters can be added later as separate packages.
+- Works with x402 today (an open protocol for paying for HTTP resources with stablecoins, USDC on Base). Architecture is rail-pluggable so AP2, ACP, SEPA, ACH, and card adapters can be added later as separate packages.
 
 ## Install
 
@@ -93,11 +116,11 @@ policy engine still fires. Approval callbacks still get called. Swap
 
 Two runnable examples ship in the repo:
 
-- **`examples/x402-quickstart/`** — a local x402 buyer + seller. End-to-end
+- **`examples/x402-quickstart/`**: a local x402 buyer + seller. End-to-end
   proof the protocol works against Base Sepolia testnet. Requires a Coinbase
   Developer Platform account for testnet funds; the README walks you through
   every step.
-- **`examples/agent-sdk-demo/`** — a Claude agent (using the Anthropic API)
+- **`examples/agent-sdk-demo/`**: a Claude agent (using the Anthropic API)
   that autonomously decides to call `pay()` to fetch a paywalled API. The
   full lifecycle is visible: tool call, policy evaluation, x402 signing,
   on-chain settlement, response handed back to the model.
@@ -172,13 +195,13 @@ for OpenClaw, Hermes, and Cursor setup.
 
 **Ask-before-spending, in the chat.** When a payment exceeds your
 auto-approve limit, the agent does not pay and does not fail. It asks you
-right there in the conversation — "this costs 2.50 USDC, approve?" — and
+right there in the conversation ("this costs 2.50 USDC, approve?") and
 only settles after you say yes (it calls `approve_payment` under the
 hood). Below the limit, it just pays. Over your hard limit, it refuses.
 The human stays in the loop without leaving the chat.
 
 **Try it with no wallet.** Set `BLACKTEA_RAIL=mock` and the server runs
-against a simulated merchant — no x402 endpoint, no USDC, no signing.
+against a simulated merchant: no x402 endpoint, no USDC, no signing.
 `BLACKTEA_MOCK_AMOUNT` sets the price so you can watch auto-approve,
 ask-first, and reject all fire against your policy before you wire a real
 wallet.
@@ -203,7 +226,7 @@ More examples in [docs/policy-cookbook.md](docs/policy-cookbook.md).
 - Issuing wallets or holding balances. Bring your own wallet for whichever
   rail you're using.
 - Subscriptions or recurring billing.
-- The seller side of x402. blacktea is buyer-side — it protects the agent
+- The seller side of x402. blacktea is buyer-side: it protects the agent
   with the wallet, not the API accepting payments. Use `x402-express` or
   similar for the seller.
 
@@ -211,13 +234,13 @@ More examples in [docs/policy-cookbook.md](docs/policy-cookbook.md).
 
 | Rail | Status | Package |
 |---|---|---|
-| **x402** (USDC on Base) | Shipped in v0.0.x | `@nmrtn/blacktea/adapters` |
-| **mock** (no network) | Shipped in v0.0.x | `@nmrtn/blacktea/adapters` |
-| AP2 | Planned, design open | — |
-| ACP | Planned, design open | — |
-| SEPA push | Planned, design open | — |
-| ACH | Planned, design open | — |
-| Cards (Stripe Issuing auth-webhook) | Planned, deferred to v1.5+ | — |
+| **x402** (USDC on Base) | Shipped | `@nmrtn/blacktea/adapters` |
+| **mock** (no network) | Shipped | `@nmrtn/blacktea/adapters` |
+| AP2 | Planned, design open | n/a |
+| ACP | Planned, design open | n/a |
+| SEPA push | Planned, design open | n/a |
+| ACH | Planned, design open | n/a |
+| Cards (Stripe Issuing auth-webhook) | Planned, deferred to v1.5+ | n/a |
 
 The `RailAdapter` interface is two methods (`preflight`, `settle`) plus
 `name` and `supports`. Adding a rail is a separate adapter package; the
@@ -249,7 +272,7 @@ To get set up locally:
 git clone https://github.com/nmrtn/blacktea.git
 cd blacktea
 npm install
-npm test          # 160+ tests, ~10s
+npm test          # 166 tests, ~10s
 npm run lint
 npm run typecheck
 npm run build
@@ -262,20 +285,16 @@ install && npm test`.
 Code style is enforced by Biome (`npm run lint:fix` formats automatically).
 Tests use Vitest. CI runs everything on every push and PR.
 
-For bigger design questions — a new policy operator, a new rail, a
-breaking change — open an issue first. Better to argue about the shape
+For bigger design questions (a new policy operator, a new rail, a
+breaking change), open an issue first. Better to argue about the shape
 in a thread than in a PR review.
 
 ## Status
 
-Early. v0.0.x. The API will change before 1.0. Lockstep with feedback
+Early. v0.1.x. The API will change before 1.0. Lockstep with feedback
 from real users; if your agent uses x402 and you have felt this pain,
 open an issue.
 
 ## License
 
 MIT. Do what you want.
-
-## Credits
-
-Built mostly with [Claude Code](https://claude.com/claude-code). Inspired by talking to people who hand-rolled this themselves and got tired of it.

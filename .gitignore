@@ -33,3 +33,6 @@ Thumbs.db
 # logs
 *.log
 npm-debug.log*
+
+# demo video (kept local for social posts; the README uses docs/demo.gif)
+docs/*.mp4
