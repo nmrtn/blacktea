@@ -8,6 +8,26 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
+## `@nmrtn/blacktea` v0.1.1 — 2026-05-28
+
+Performance: faster startup, lighter footprint. No API changes.
+
+### Changed
+
+- x402-fetch is now loaded lazily (a dynamic import on the first `settle`)
+  instead of at module load. x402-fetch pulls in a large dependency tree
+  (viem, metamask/walletconnect); deferring it makes importing the library,
+  importing the adapters, constructing a wallet, preflighting, and running the
+  policy near-instant. The adapters barrel import dropped from hundreds of ms
+  (loading the whole wallet stack) to about 7 ms. Mock-rail usage never loads
+  x402-fetch at all. This helps MCP hosts that spawn the server and expect a
+  quick handshake. Note: this speeds module LOAD time, not the first-run npm
+  download of x402-fetch's dependencies (that is inherent to the dependency).
+
+The `@nmrtn/blacktea-mcp` server does not need a new release: it depends on
+`@nmrtn/blacktea` `^0.1.0`, so `npx -y @nmrtn/blacktea-mcp` resolves the fixed
+SDK automatically.
+
 ## `@nmrtn/blacktea` v0.1.0 — 2026-05-28
 
 First minor release. Adds the two-phase payment API that makes

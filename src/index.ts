@@ -6,7 +6,7 @@
  * of this barrel so plain consumers do not pay for unused rail clients.
  */
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
 export { blacktea } from "./agent.js";
 export type { BlackteaOptions, PayFunction } from "./agent.js";

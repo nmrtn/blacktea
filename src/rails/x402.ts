@@ -14,7 +14,6 @@
  * contract address.
  */
 
-import { createSigner, wrapFetchWithPayment } from "x402-fetch";
 import { NetworkError, RailUnavailableError } from "../errors.js";
 import type {
   PayInput,
@@ -58,10 +57,23 @@ export function x402Wallet(cfg: X402WalletConfig): RailAdapter {
   const currency = cfg.currency ?? "USDC";
   const railName = "x402";
 
-  let signerPromise: ReturnType<typeof createSigner> | null = null;
+  // Lazy-load x402-fetch. It pulls in a large dependency tree (viem,
+  // metamask/walletconnect, etc.) at module load. Importing it only when a
+  // payment actually settles keeps startup fast: building the adapter,
+  // preflighting (which uses global fetch), and running the policy never touch
+  // it. This matters for MCP hosts that spawn the server and expect a quick
+  // handshake. A cold static import can blow past their connect timeout.
+  type X402Mod = typeof import("x402-fetch");
+  let modPromise: Promise<X402Mod> | null = null;
+  function loadX402(): Promise<X402Mod> {
+    if (!modPromise) modPromise = import("x402-fetch");
+    return modPromise;
+  }
+
+  let signerPromise: Promise<Awaited<ReturnType<X402Mod["createSigner"]>>> | null = null;
   function ensureSigner() {
     if (!signerPromise) {
-      signerPromise = createSigner(cfg.chain, cfg.privateKey);
+      signerPromise = loadX402().then((mod) => mod.createSigner(cfg.chain, cfg.privateKey));
     }
     return signerPromise;
   }
@@ -136,6 +148,7 @@ export function x402Wallet(cfg: X402WalletConfig): RailAdapter {
       requirement: PaymentRequirement,
       _opts: PayOptions,
     ): Promise<SettleResult> {
+      const { wrapFetchWithPayment } = await loadX402();
       const signer = await ensureSigner();
       const fetchWithPayment = wrapFetchWithPayment(fetch, signer);
 
