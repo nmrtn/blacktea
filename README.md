@@ -1,4 +1,4 @@
-# blacktea
+# 🫖 blacktea
 
 [![CI](https://github.com/nmrtn/blacktea/actions/workflows/ci.yml/badge.svg)](https://github.com/nmrtn/blacktea/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/%40nmrtn%2Fblacktea?label=%40nmrtn%2Fblacktea)](https://www.npmjs.com/package/@nmrtn/blacktea)
