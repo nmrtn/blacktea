@@ -8,6 +8,60 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
+## `@nmrtn/blacktea` v0.1.0 — 2026-05-28
+
+First minor release. Adds the two-phase payment API that makes
+out-of-process human approval possible — the missing piece for chat
+agents (Hermes, OpenClaw, Claude Desktop) where the human is reachable
+only through the agent, not through a blocking in-process callback.
+
+### Added
+
+- **`pay.stage(input)` and `pay.complete(staged, decision)`.** The
+  callable `pay()` you already use is unchanged; these are additive
+  methods on it. `stage()` runs preflight + policy and returns one of
+  `{ outcome: "completed" }` (auto-approved, already settled),
+  `{ outcome: "rejected" }` (policy said no), or
+  `{ outcome: "approval_required", staged }` (held, NOT settled).
+  `complete(staged, "approve" | "reject")` settles or denies a held
+  payment once a human has decided out of band. Money never moves on
+  an `approval_required` payment until `complete(…, "approve")` is called.
+- New exported types `StagedIntent` and `StageResult`.
+
+### Unchanged
+
+- `pay()` one-shot behavior is identical. Existing SDK code needs no
+  changes. The in-process approval channels (`console`, `callback`)
+  still work exactly as before.
+
+## `@nmrtn/blacktea-mcp` v0.1.0 — 2026-05-28
+
+In-conversation approval. The headline feature for personal-agent use.
+
+### Added
+
+- **`approve_payment` and `reject_payment` tools.** When the policy says
+  a payment needs approval, the `pay` tool no longer fails — it returns
+  `status: "approval_required"` with an `intent_id` and the amount, and
+  holds the payment in memory. The agent relays the amount to the human;
+  on a yes, the agent calls `approve_payment` with the `intent_id` and
+  the payment settles. On a no, `reject_payment`. This is the
+  ask-before-spending flow that was impossible through MCP before
+  (console approval corrupts the stdio stream; callback approval has no
+  human to call). Held intents expire after 1 hour.
+- **`BLACKTEA_RAIL=mock` mode.** Run the server against a no-network
+  simulated rail to exercise the policy + approval + audit flow with no
+  x402 endpoint, no wallet, and no USDC. `BLACKTEA_MOCK_AMOUNT` sets the
+  price the mock "charges" so you can drive auto-approve vs.
+  approval-required vs. reject deterministically. Great for trying the
+  server or for demos.
+
+### Changed
+
+- Dependency on `@nmrtn/blacktea` bumped to `^0.1.0` (needs the new
+  `pay.stage`/`pay.complete` API).
+- Startup banner now reports the active rail: `… ready. rail=mock …`.
+
 ## `@nmrtn/blacktea` v0.0.4 — 2026-05-27
 
 Adds `mockWallet`, a no-network rail adapter. The reason this exists:

@@ -622,3 +622,167 @@ describe("blacktea()", () => {
     });
   });
 });
+
+describe("two-phase API (pay.stage / pay.complete)", () => {
+  it("exposes stage and complete as functions on the returned pay", () => {
+    const rail = fakeRail();
+    const policy: Policy = { rules: [], default: { approve: true } };
+    const pay = blacktea({ source: rail, policy, history: new FakeHistory(), audit: () => {} });
+    expect(typeof pay).toBe("function");
+    expect(typeof pay.stage).toBe("function");
+    expect(typeof pay.complete).toBe("function");
+  });
+
+  describe("stage()", () => {
+    it("settles immediately and returns completed when policy auto-approves", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [{ if: { amount_lt: 10 }, then: { approve: true } }],
+        default: { approval: "callback" },
+      };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      const result = await pay.stage(baseInput);
+
+      expect(result.outcome).toBe("completed");
+      if (result.outcome !== "completed") throw new Error("expected completed");
+      expect(result.intent.status).toBe("completed");
+      expect(result.intent.receipt?.amount).toBe(4);
+      expect(rail.settleCalls).toHaveLength(1);
+      expect(history.events).toHaveLength(1);
+    });
+
+    it("returns rejected and does NOT settle when policy rejects", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [{ if: { amount_gte: 1 }, then: { reject: "too_expensive" } }],
+        default: { approve: true },
+      };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      const result = await pay.stage(baseInput);
+
+      expect(result.outcome).toBe("rejected");
+      if (result.outcome !== "rejected") throw new Error("expected rejected");
+      expect(result.reason).toBe("too_expensive");
+      expect(result.rule_fired).toBe("rule[0]");
+      expect(rail.settleCalls).toHaveLength(0);
+      expect(history.events).toHaveLength(0);
+    });
+
+    it("returns approval_required and does NOT settle when policy needs approval", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
+        default: { approve: true },
+      };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      const result = await pay.stage(baseInput);
+
+      expect(result.outcome).toBe("approval_required");
+      if (result.outcome !== "approval_required") throw new Error("expected approval_required");
+      expect(result.staged.amount).toBe(4);
+      expect(result.staged.currency).toBe("USDC");
+      expect(result.staged.recipient_url).toBe(baseInput.url);
+      expect(result.staged.intent).toBe(baseInput.intent);
+      expect(result.staged.rule_fired).toBe("rule[0]");
+      expect(result.staged.intent_id).toMatch(/^intent_/);
+      // Crucially: nothing settled, nothing recorded — the money is held.
+      expect(rail.settleCalls).toHaveLength(0);
+      expect(history.events).toHaveLength(0);
+    });
+
+    it("returns rejected when max_amount is exceeded (before policy)", async () => {
+      const rail = fakeRail(); // preflight amount is 4
+      const history = new FakeHistory();
+      const policy: Policy = { rules: [], default: { approve: true } };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      const result = await pay.stage({ ...baseInput, max_amount: 1 });
+
+      expect(result.outcome).toBe("rejected");
+      if (result.outcome !== "rejected") throw new Error("expected rejected");
+      expect(result.reason).toBe("max_amount_exceeded");
+      expect(rail.settleCalls).toHaveLength(0);
+    });
+  });
+
+  describe("complete()", () => {
+    it("settles a held payment when the human approves", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
+        default: { approve: true },
+      };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      const staged = await pay.stage(baseInput);
+      if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
+      // Held: nothing settled yet.
+      expect(rail.settleCalls).toHaveLength(0);
+
+      const intent = await pay.complete(staged.staged, "approve");
+
+      expect(intent.status).toBe("completed");
+      expect(intent.receipt?.amount).toBe(4);
+      expect(intent.data).toEqual({ fake: "api response" });
+      // Settled exactly once, recorded exactly once.
+      expect(rail.settleCalls).toHaveLength(1);
+      expect(history.events).toHaveLength(1);
+      expect(history.events[0]?.rule_fired).toBe("rule[0]");
+      expect(history.events[0]?.intent_id).toBe(staged.staged.intent_id);
+    });
+
+    it("denies without settling when the human rejects", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
+        default: { approve: true },
+      };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      const staged = await pay.stage(baseInput);
+      if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
+
+      const intent = await pay.complete(staged.staged, "reject");
+
+      expect(intent.status).toBe("denied");
+      expect(intent.receipt).toBeUndefined();
+      expect(intent.error).toBeInstanceOf(PolicyDeniedError);
+      // No money moved, nothing recorded.
+      expect(rail.settleCalls).toHaveLength(0);
+      expect(history.events).toHaveLength(0);
+    });
+
+    it("preserves the staged intent_id through approve so the audit trail is coherent", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
+        default: { approve: true },
+      };
+      const audit = collectingAudit();
+      const pay = blacktea({ source: rail, policy, history, audit: audit.sink });
+
+      const staged = await pay.stage(baseInput);
+      if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
+      const intentId = staged.staged.intent_id;
+
+      const intent = await pay.complete(staged.staged, "approve");
+      expect(intent.id).toBe(intentId);
+
+      const names = audit.events.map((e) => e.event);
+      expect(names).toContain("approval_staged");
+      expect(names).toContain("approval_received");
+      expect(names).toContain("payment_completed");
+      // Every event carries the same intent id end to end.
+      expect(audit.events.every((e) => e.intent_id === intentId)).toBe(true);
+    });
+  });
+});

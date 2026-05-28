@@ -228,7 +228,7 @@ describe("blacktea-mcp server", () => {
       });
     });
 
-    it("lists pay and audit_query as tools", async () => {
+    it("lists pay, approve_payment, reject_payment, and audit_query as tools", async () => {
       await initializeServer(server);
 
       server?.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
@@ -236,7 +236,7 @@ describe("blacktea-mcp server", () => {
       const response = await waitFor(() => server?.responses.find((r) => r.id === 2));
       const result = response.result as { tools: Array<{ name: string; inputSchema: object }> };
       const names = result.tools.map((t) => t.name).sort();
-      expect(names).toEqual(["audit_query", "pay"]);
+      expect(names).toEqual(["approve_payment", "audit_query", "pay", "reject_payment"]);
 
       const payTool = result.tools.find((t) => t.name === "pay");
       expect(payTool?.inputSchema).toMatchObject({
@@ -247,6 +247,13 @@ describe("blacktea-mcp server", () => {
           max_amount: { type: "number" },
         },
         required: ["url", "intent"],
+      });
+
+      const approveTool = result.tools.find((t) => t.name === "approve_payment");
+      expect(approveTool?.inputSchema).toMatchObject({
+        type: "object",
+        properties: { intent_id: { type: "string" } },
+        required: ["intent_id"],
       });
     });
 
@@ -369,6 +376,181 @@ describe("blacktea-mcp server", () => {
       expect(body.count).toBe(2);
       expect(body.events).toHaveLength(2);
       expect(body.events[0].intent_id).toBe("intent_1");
+    });
+  });
+
+  describe("approval flow (mock rail)", () => {
+    // These exercise the in-conversation approval wiring end to end without
+    // needing a live x402 endpoint, by running the server with BLACKTEA_RAIL=mock.
+    // The mock rail "charges" BLACKTEA_MOCK_AMOUNT so we can drive the policy
+    // into auto-approve / approval-required / settle paths deterministically.
+
+    const approvalPolicy = JSON.stringify({
+      rules: [{ if: { amount_lt: 1 }, then: { approve: true } }],
+      default: { approval: "callback" },
+    });
+
+    it("auto-approves and settles directly when under the policy limit", async () => {
+      writeFileSync(policyPath, approvalPolicy);
+      server = await startServer({
+        EVM_PRIVATE_KEY: TEST_PK,
+        BLACKTEA_POLICY: policyPath,
+        BLACKTEA_HISTORY: join(tmpDir, "history.jsonl"),
+        BLACKTEA_RAIL: "mock",
+        BLACKTEA_MOCK_AMOUNT: "0.5",
+      });
+      await initializeServer(server);
+
+      server.send({
+        jsonrpc: "2.0",
+        id: 20,
+        method: "tools/call",
+        params: {
+          name: "pay",
+          arguments: { url: "https://shop.example/cheap", intent: "small buy" },
+        },
+      });
+      const resp = await waitFor(() => server?.responses.find((r) => r.id === 20));
+      const result = resp.result as { isError?: boolean; content: Array<{ text: string }> };
+      const body = JSON.parse(result.content[0]?.text ?? "{}");
+      expect(body.ok).toBe(true);
+      expect(body.receipt.simulated).toBe(true);
+      expect(body.receipt.amount).toBe(0.5);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("holds for approval, then settles via approve_payment", async () => {
+      writeFileSync(policyPath, approvalPolicy);
+      server = await startServer({
+        EVM_PRIVATE_KEY: TEST_PK,
+        BLACKTEA_POLICY: policyPath,
+        BLACKTEA_HISTORY: join(tmpDir, "history.jsonl"),
+        BLACKTEA_RAIL: "mock",
+        BLACKTEA_MOCK_AMOUNT: "5",
+      });
+      await initializeServer(server);
+
+      // 1. pay -> approval_required (NOT an error, NOT settled)
+      server.send({
+        jsonrpc: "2.0",
+        id: 21,
+        method: "tools/call",
+        params: {
+          name: "pay",
+          arguments: { url: "https://shop.example/item", intent: "buy the thing" },
+        },
+      });
+      const payResp = await waitFor(() => server?.responses.find((r) => r.id === 21));
+      const payResult = payResp.result as { isError?: boolean; content: Array<{ text: string }> };
+      const payBody = JSON.parse(payResult.content[0]?.text ?? "{}");
+      expect(payBody.status).toBe("approval_required");
+      expect(payBody.amount).toBe(5);
+      expect(payBody.intent_id).toMatch(/^intent_/);
+      expect(payBody.message).toMatch(/approve_payment/);
+      // A held payment is a pending state, not a tool error.
+      expect(payResult.isError).toBeUndefined();
+
+      // 2. approve_payment -> completed
+      server.send({
+        jsonrpc: "2.0",
+        id: 22,
+        method: "tools/call",
+        params: { name: "approve_payment", arguments: { intent_id: payBody.intent_id } },
+      });
+      const apprResp = await waitFor(() => server?.responses.find((r) => r.id === 22));
+      const apprResult = apprResp.result as { content: Array<{ text: string }> };
+      const apprBody = JSON.parse(apprResult.content[0]?.text ?? "{}");
+      expect(apprBody.ok).toBe(true);
+      expect(apprBody.receipt.simulated).toBe(true);
+      expect(apprBody.receipt.amount).toBe(5);
+      expect(apprBody.data).toBeDefined();
+    });
+
+    it("declines a held payment via reject_payment", async () => {
+      writeFileSync(policyPath, approvalPolicy);
+      server = await startServer({
+        EVM_PRIVATE_KEY: TEST_PK,
+        BLACKTEA_POLICY: policyPath,
+        BLACKTEA_HISTORY: join(tmpDir, "history.jsonl"),
+        BLACKTEA_RAIL: "mock",
+        BLACKTEA_MOCK_AMOUNT: "5",
+      });
+      await initializeServer(server);
+
+      server.send({
+        jsonrpc: "2.0",
+        id: 23,
+        method: "tools/call",
+        params: {
+          name: "pay",
+          arguments: { url: "https://shop.example/item", intent: "buy the thing" },
+        },
+      });
+      const payResp = await waitFor(() => server?.responses.find((r) => r.id === 23));
+      const payBody = JSON.parse(
+        (payResp.result as { content: Array<{ text: string }> }).content[0]?.text ?? "{}",
+      );
+      expect(payBody.status).toBe("approval_required");
+
+      server.send({
+        jsonrpc: "2.0",
+        id: 24,
+        method: "tools/call",
+        params: { name: "reject_payment", arguments: { intent_id: payBody.intent_id } },
+      });
+      const rejResp = await waitFor(() => server?.responses.find((r) => r.id === 24));
+      const rejBody = JSON.parse(
+        (rejResp.result as { content: Array<{ text: string }> }).content[0]?.text ?? "{}",
+      );
+      expect(rejBody.ok).toBe(true);
+      expect(rejBody.status).toBe("rejected");
+      expect(rejBody.message).toMatch(/[Nn]othing was charged/);
+    });
+
+    it("approve_payment returns not_found for an unknown intent_id", async () => {
+      writeFileSync(policyPath, approvalPolicy);
+      server = await startServer({
+        EVM_PRIVATE_KEY: TEST_PK,
+        BLACKTEA_POLICY: policyPath,
+        BLACKTEA_HISTORY: join(tmpDir, "history.jsonl"),
+        BLACKTEA_RAIL: "mock",
+      });
+      await initializeServer(server);
+
+      server.send({
+        jsonrpc: "2.0",
+        id: 25,
+        method: "tools/call",
+        params: { name: "approve_payment", arguments: { intent_id: "intent_does_not_exist" } },
+      });
+      const resp = await waitFor(() => server?.responses.find((r) => r.id === 25));
+      const result = resp.result as { isError?: boolean; content: Array<{ text: string }> };
+      const body = JSON.parse(result.content[0]?.text ?? "{}");
+      expect(result.isError).toBe(true);
+      expect(body.error.code).toBe("not_found");
+    });
+
+    it("approve_payment returns invalid_input when intent_id is missing", async () => {
+      writeFileSync(policyPath, approvalPolicy);
+      server = await startServer({
+        EVM_PRIVATE_KEY: TEST_PK,
+        BLACKTEA_POLICY: policyPath,
+        BLACKTEA_HISTORY: join(tmpDir, "history.jsonl"),
+        BLACKTEA_RAIL: "mock",
+      });
+      await initializeServer(server);
+
+      server.send({
+        jsonrpc: "2.0",
+        id: 26,
+        method: "tools/call",
+        params: { name: "approve_payment", arguments: {} },
+      });
+      const resp = await waitFor(() => server?.responses.find((r) => r.id === 26));
+      const result = resp.result as { isError?: boolean; content: Array<{ text: string }> };
+      const body = JSON.parse(result.content[0]?.text ?? "{}");
+      expect(result.isError).toBe(true);
+      expect(body.error.code).toBe("invalid_input");
     });
   });
 });

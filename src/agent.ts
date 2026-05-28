@@ -5,24 +5,35 @@
  * cache, audit sink, and approval callback into a single pay() function
  * that the agent calls for each payment.
  *
+ * pay() runs the whole flow in one call (preflight -> policy -> approval ->
+ * settle). For callers who cannot resolve a human approval in-process
+ * (MCP servers, chat agents where the human is only reachable through the
+ * agent), pay also exposes a two-phase API:
+ *
+ *   pay.stage(input)              -> StageResult
+ *       Runs preflight + policy. Auto-approved payments settle and return
+ *       { outcome: "completed" }. Rejected ones return { outcome: "rejected" }.
+ *       Payments that need approval are HELD and returned as
+ *       { outcome: "approval_required", staged } WITHOUT settling.
+ *
+ *   pay.complete(staged, "approve" | "reject")  -> PaymentIntent
+ *       Settles (or denies) a held payment once the human has decided.
+ *
  * Flow (request-response, x402-shaped):
  *   1. Validate the input shape (PayInput).
  *   2. Check the idempotency cache. Hit returns cached receipt and data.
  *   3. Pick a rail.
  *   4. rail.preflight(input)  -> PaymentRequirement (amount, recipient, ...).
- *   5. Enforce max_amount if the customer set one. Throw PolicyDenied
- *      if the server is asking for more than the cap.
- *   6. Evaluate the policy with the full PaymentIntentInput
- *      (built from PayInput + PaymentRequirement).
+ *   5. Enforce max_amount if the customer set one.
+ *   6. Evaluate the policy with the full PaymentIntentInput.
  *   7. Branch on decision: allow / approval / reject.
  *   8. If approved, rail.settle(input, requirement)  -> { receipt, data }.
  *   9. Record to history, cache the receipt, emit audit, return.
  *
  * v1 simplifications:
- *   - Approval channels: console (CLI) and callback (onApprovalNeeded).
- *     Webhook delivery is deferred to v1.5.
+ *   - In-process approval channels: console (CLI) and callback
+ *     (onApprovalNeeded). Out-of-process approval uses stage/complete.
  *   - PaymentIntent is always in a terminal state when pay() resolves.
- *     Async state machine lands in T8.
  */
 
 import { randomUUID } from "node:crypto";
@@ -37,6 +48,7 @@ import {
 } from "./errors.js";
 import { FileBackedHistoryStore } from "./history/file-backed.js";
 import { InMemoryIdempotencyStore } from "./idempotency/in-memory.js";
+import type { Decision } from "./policy/decision.js";
 import { evaluatePolicy } from "./policy/evaluator.js";
 import { loadPolicy } from "./policy/load.js";
 import type { Policy } from "./policy/schema.js";
@@ -54,6 +66,8 @@ import type {
   PaymentRequirement,
   RailAdapter,
   Receipt,
+  StageResult,
+  StagedIntent,
 } from "./types.js";
 
 export interface BlackteaOptions {
@@ -66,7 +80,19 @@ export interface BlackteaOptions {
   dry_run?: boolean;
 }
 
-export type PayFunction = (input: PayInput, opts?: PayOptions) => Promise<PaymentIntent>;
+export type PayFunction = ((input: PayInput, opts?: PayOptions) => Promise<PaymentIntent>) & {
+  /**
+   * Two-phase entry point. Runs preflight + policy and either settles
+   * (auto-approved / rejected) or holds the payment for an out-of-process
+   * human decision. See StageResult.
+   */
+  stage: (input: PayInput, opts?: PayOptions) => Promise<StageResult>;
+  /**
+   * Settle (or deny) a payment that stage() held for approval. Pass the
+   * StagedIntent it returned and the human's decision.
+   */
+  complete: (staged: StagedIntent, decision: "approve" | "reject") => Promise<PaymentIntent>;
+};
 
 const DEFAULT_IDEMPOTENCY_TTL_SECONDS = 24 * 3600;
 
@@ -87,7 +113,25 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   const dryRun = options.dry_run ?? false;
   const onApprovalNeeded = options.onApprovalNeeded;
 
-  return async function pay(input, opts = {}): Promise<PaymentIntent> {
+  // ---------- shared pipeline: prepare ----------
+
+  // The result of running everything up to and including policy evaluation:
+  // a cached hit, a rejection, or a "ready" payment (allow or approval) that
+  // still needs settling.
+  type PrepareResult =
+    | { kind: "cached"; intent: PaymentIntent }
+    | { kind: "rejected"; reason: string; ruleFired: string }
+    | {
+        kind: "ready";
+        intentId: string;
+        idempotencyKey: string;
+        rail: RailAdapter;
+        requirement: PaymentRequirement;
+        policyInput: PaymentIntentInput;
+        decision: Decision;
+      };
+
+  async function prepare(input: PayInput, opts: PayOptions): Promise<PrepareResult> {
     validateInput(input);
 
     const intentId = `intent_${randomUUID()}`;
@@ -99,21 +143,23 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       max_amount: input.max_amount,
     });
 
-    // Idempotency check first. If we have already settled this exact key,
-    // return the prior receipt without re-running policy or hitting the rail.
+    // Idempotency first. If we have already settled this exact key, return
+    // the prior receipt without re-running policy or hitting the rail.
     const cached = await idempotency.get(idempotencyKey);
     if (cached) {
       emit(audit, "idempotency_hit", intentId, {
         idempotency_key: idempotencyKey,
         original_receipt_id: cached.id,
       });
-      return makeTerminalIntent(intentId, input, "completed", cached, undefined);
+      return {
+        kind: "cached",
+        intent: makeTerminalIntent(intentId, input, "completed", cached, undefined),
+      };
     }
 
     const rail = pickRail(rails, input, opts.rail);
     emit(audit, "rail_chosen", intentId, { rail: rail.name });
 
-    // Step 1: preflight. Learn what payment is needed.
     let requirement: PaymentRequirement;
     try {
       requirement = await rail.preflight(input);
@@ -130,9 +176,8 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       recipient_wallet: requirement.recipient_wallet,
     });
 
-    // Step 2: enforce max_amount if the customer set one. This is a
-    // pre-policy hard cap because if the server is asking for more than
-    // the customer was willing to pay, no policy evaluation can rescue it.
+    // Pre-policy hard cap: if the server asks for more than the customer was
+    // willing to pay, no policy evaluation can rescue it.
     if (input.max_amount !== undefined && requirement.amount > input.max_amount) {
       emit(audit, "payment_denied", intentId, {
         reason: "max_amount_exceeded",
@@ -140,10 +185,9 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         requested: requirement.amount,
         cap: input.max_amount,
       });
-      throw new PolicyDeniedError("max_amount_exceeded", "input.max_amount");
+      return { kind: "rejected", reason: "max_amount_exceeded", ruleFired: "input.max_amount" };
     }
 
-    // Step 3: build the full intent and evaluate the policy.
     const policyInput: PaymentIntentInput = {
       amount: requirement.amount,
       currency: requirement.currency,
@@ -167,31 +211,27 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         reason: decision.reason,
         rule_fired: decision.rule_fired,
       });
-      throw new PolicyDeniedError(decision.reason, decision.rule_fired);
+      return { kind: "rejected", reason: decision.reason, ruleFired: decision.rule_fired };
     }
 
-    if (decision.kind === "approval") {
-      const ok = await runApprovalFlow({
-        intentId,
-        policyInput,
-        decision,
-        onApprovalNeeded,
-        audit,
-      });
-      if (!ok.approved) {
-        if (ok.timed_out) {
-          emit(audit, "approval_timed_out", intentId, {});
-          throw new ApprovalTimeoutError(intentId);
-        }
-        emit(audit, "payment_denied", intentId, {
-          reason: ok.reason ?? "approval_denied",
-          rule_fired: decision.rule_fired,
-        });
-        throw new PolicyDeniedError(ok.reason ?? "approval_denied", decision.rule_fired);
-      }
-    }
+    return { kind: "ready", intentId, idempotencyKey, rail, requirement, policyInput, decision };
+  }
 
-    // Either decision was allow, or approval came back yes. Settle.
+  // ---------- shared pipeline: settle + record ----------
+
+  async function settleAndRecord(args: {
+    intentId: string;
+    idempotencyKey: string;
+    rail: RailAdapter;
+    requirement: PaymentRequirement;
+    policyInput: PaymentIntentInput;
+    ruleFired: string;
+    input: PayInput;
+    opts: PayOptions;
+  }): Promise<PaymentIntent> {
+    const { intentId, idempotencyKey, rail, requirement, policyInput, ruleFired, input, opts } =
+      args;
+
     let receipt: Receipt;
     let data: unknown;
     if (dryRun) {
@@ -222,7 +262,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       currency: receipt.currency,
       recipient_wallet: receipt.recipient_wallet,
       recipient_url: receipt.recipient_url,
-      rule_fired: decision.rule_fired,
+      rule_fired: ruleFired,
       intent_id: intentId,
     });
 
@@ -236,7 +276,142 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     });
 
     return makeTerminalIntent(intentId, input, "completed", receipt, data);
-  };
+  }
+
+  // ---------- one-shot pay ----------
+
+  async function pay(input: PayInput, opts: PayOptions = {}): Promise<PaymentIntent> {
+    const prep = await prepare(input, opts);
+    if (prep.kind === "cached") return prep.intent;
+    if (prep.kind === "rejected") throw new PolicyDeniedError(prep.reason, prep.ruleFired);
+
+    const { intentId, idempotencyKey, rail, requirement, policyInput, decision } = prep;
+
+    if (decision.kind === "approval") {
+      const ok = await runApprovalFlow({
+        intentId,
+        policyInput,
+        decision,
+        onApprovalNeeded,
+        audit,
+      });
+      if (!ok.approved) {
+        if (ok.timed_out) {
+          emit(audit, "approval_timed_out", intentId, {});
+          throw new ApprovalTimeoutError(intentId);
+        }
+        emit(audit, "payment_denied", intentId, {
+          reason: ok.reason ?? "approval_denied",
+          rule_fired: decision.rule_fired,
+        });
+        throw new PolicyDeniedError(ok.reason ?? "approval_denied", decision.rule_fired);
+      }
+    }
+
+    return settleAndRecord({
+      intentId,
+      idempotencyKey,
+      rail,
+      requirement,
+      policyInput,
+      ruleFired: decision.rule_fired,
+      input,
+      opts,
+    });
+  }
+
+  // ---------- two-phase: stage ----------
+
+  async function stage(input: PayInput, opts: PayOptions = {}): Promise<StageResult> {
+    const prep = await prepare(input, opts);
+    if (prep.kind === "cached") return { outcome: "completed", intent: prep.intent };
+    if (prep.kind === "rejected") {
+      return { outcome: "rejected", reason: prep.reason, rule_fired: prep.ruleFired };
+    }
+
+    const { intentId, idempotencyKey, rail, requirement, policyInput, decision } = prep;
+
+    if (decision.kind === "approval") {
+      const staged: StagedIntent = {
+        intent_id: intentId,
+        amount: requirement.amount,
+        currency: requirement.currency,
+        ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
+        recipient_url: input.url,
+        intent: input.intent,
+        rule_fired: decision.rule_fired,
+        _input: input,
+        _requirement: requirement,
+        _opts: opts,
+        _railName: rail.name,
+        _idempotencyKey: idempotencyKey,
+      };
+      emit(audit, "approval_staged", intentId, {
+        amount: requirement.amount,
+        currency: requirement.currency,
+        rule_fired: decision.rule_fired,
+      });
+      return { outcome: "approval_required", staged };
+    }
+
+    const intent = await settleAndRecord({
+      intentId,
+      idempotencyKey,
+      rail,
+      requirement,
+      policyInput,
+      ruleFired: decision.rule_fired,
+      input,
+      opts,
+    });
+    return { outcome: "completed", intent };
+  }
+
+  // ---------- two-phase: complete ----------
+
+  async function complete(
+    staged: StagedIntent,
+    decision: "approve" | "reject",
+  ): Promise<PaymentIntent> {
+    if (decision === "reject") {
+      emit(audit, "approval_received", staged.intent_id, { decision: "deny" });
+      emit(audit, "payment_denied", staged.intent_id, {
+        reason: "approval_denied",
+        rule_fired: staged.rule_fired,
+      });
+      return makeDeniedIntent(staged);
+    }
+
+    emit(audit, "approval_received", staged.intent_id, { decision: "approve" });
+
+    const rail = rails.find((r) => r.name === staged._railName);
+    if (!rail) {
+      throw new NoEligibleRailError([staged._railName]);
+    }
+
+    const policyInput: PaymentIntentInput = {
+      amount: staged._requirement.amount,
+      currency: staged._requirement.currency,
+      url: staged._input.url,
+      intent: staged._input.intent,
+      ...(staged._requirement.recipient_wallet
+        ? { recipient_wallet: staged._requirement.recipient_wallet }
+        : {}),
+    };
+
+    return settleAndRecord({
+      intentId: staged.intent_id,
+      idempotencyKey: staged._idempotencyKey,
+      rail,
+      requirement: staged._requirement,
+      policyInput,
+      ruleFired: staged.rule_fired,
+      input: staged._input,
+      opts: staged._opts,
+    });
+  }
+
+  return Object.assign(pay, { stage, complete });
 }
 
 // ---------- input validation ----------
@@ -281,7 +456,7 @@ function pickRail(
   throw new NoEligibleRailError(rails.map((r) => r.name));
 }
 
-// ---------- approval ----------
+// ---------- approval (in-process channels) ----------
 
 interface ApprovalOutcome {
   approved: boolean;
@@ -318,7 +493,7 @@ async function runApprovalFlow(args: {
 
   if (!onApprovalNeeded) {
     throw new ValidationError(
-      `Policy requires "callback" approval but blacktea() was not given onApprovalNeeded.`,
+      'Policy requires "callback" approval but blacktea() was not given onApprovalNeeded. For MCP servers and chat agents, use pay.stage()/pay.complete() instead.',
     );
   }
 
@@ -429,6 +604,20 @@ function makeTerminalIntent(
     input,
     receipt,
     data,
+    onStatusChange(cb) {
+      queueMicrotask(() => cb(intent));
+      return () => {};
+    },
+  };
+  return intent;
+}
+
+function makeDeniedIntent(staged: StagedIntent): PaymentIntent {
+  const intent: PaymentIntent = {
+    id: staged.intent_id,
+    status: "denied",
+    input: staged._input,
+    error: new PolicyDeniedError("approval_denied", staged.rule_fired),
     onStatusChange(cb) {
       queueMicrotask(() => cb(intent));
       return () => {};

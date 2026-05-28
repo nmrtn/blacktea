@@ -6,7 +6,7 @@
  * of this barrel so plain consumers do not pay for unused rail clients.
  */
 
-export const VERSION = "0.0.4";
+export const VERSION = "0.1.0";
 
 export { blacktea } from "./agent.js";
 export type { BlackteaOptions, PayFunction } from "./agent.js";
@@ -32,6 +32,8 @@ export type {
   RailAdapter,
   Receipt,
   SettleResult,
+  StagedIntent,
+  StageResult,
 } from "./types.js";
 
 export {

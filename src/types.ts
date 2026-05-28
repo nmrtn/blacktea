@@ -100,6 +100,49 @@ export type PaymentIntentStatus =
   | "timed_out";
 
 /**
+ * A payment that preflight + policy evaluation has held for human approval.
+ *
+ * Returned by `pay.stage()` when the policy says a payment needs approval
+ * but the caller has no in-process approval channel (the typical case for
+ * MCP servers and chat agents, where the human is reachable only through
+ * the agent, not through a blocking callback).
+ *
+ * The public fields are safe to show a human ("approve 2.50 USDC to X?").
+ * The `_`-prefixed fields are opaque internals the library needs to settle
+ * the held payment when `pay.complete(staged, "approve")` is called. Do not
+ * read or mutate them. They are not guaranteed stable across versions.
+ */
+export interface StagedIntent {
+  intent_id: string;
+  amount: number;
+  currency: string;
+  recipient_wallet?: string;
+  recipient_url: string;
+  intent: string;
+  rule_fired: string;
+  /** @internal */
+  _input: PayInput;
+  /** @internal */
+  _requirement: PaymentRequirement;
+  /** @internal */
+  _opts: PayOptions;
+  /** @internal */
+  _railName: string;
+  /** @internal */
+  _idempotencyKey: string;
+}
+
+/**
+ * Outcome of `pay.stage()`. Either the payment already resolved (auto-
+ * approved and settled, or rejected by policy), or it is held pending a
+ * human decision the caller must obtain out of band.
+ */
+export type StageResult =
+  | { outcome: "completed"; intent: PaymentIntent }
+  | { outcome: "rejected"; reason: string; rule_fired?: string }
+  | { outcome: "approval_required"; staged: StagedIntent };
+
+/**
  * Options passed to the pay() function for a single payment.
  */
 export interface PayOptions {

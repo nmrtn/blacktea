@@ -145,10 +145,11 @@ Output is JSON by default so the agent can parse it; exit codes are
 distinct per error class (3=policy denied, 4=approval timeout, etc).
 Run `blacktea --help` for the full surface.
 
-### As an MCP server (Claude Desktop, Cursor chat mode)
+### As an MCP server (Claude Desktop, Cursor, OpenClaw, Hermes)
 
-Drop one block into your MCP-aware client and the assistant gains a
-typed `pay` tool with no code on your side:
+Drop one block into your MCP-aware client and the assistant gains
+`pay`, `approve_payment`, `reject_payment`, and `audit_query` tools with
+no code on your side:
 
 ```json
 {
@@ -165,9 +166,22 @@ typed `pay` tool with no code on your side:
 }
 ```
 
-Restart your client. Ask "use the pay tool to fetch \<some x402 URL\>"
-and watch the protocol fire. See [`mcp-server/README.md`](mcp-server/README.md)
-for the full setup including Cursor and other clients.
+Restart your client. Ask "use blacktea to fetch \<some x402 URL\>" and
+watch the protocol fire. See [`mcp-server/README.md`](mcp-server/README.md)
+for OpenClaw, Hermes, and Cursor setup.
+
+**Ask-before-spending, in the chat.** When a payment exceeds your
+auto-approve limit, the agent does not pay and does not fail. It asks you
+right there in the conversation — "this costs 2.50 USDC, approve?" — and
+only settles after you say yes (it calls `approve_payment` under the
+hood). Below the limit, it just pays. Over your hard limit, it refuses.
+The human stays in the loop without leaving the chat.
+
+**Try it with no wallet.** Set `BLACKTEA_RAIL=mock` and the server runs
+against a simulated merchant — no x402 endpoint, no USDC, no signing.
+`BLACKTEA_MOCK_AMOUNT` sets the price so you can watch auto-approve,
+ask-first, and reject all fire against your policy before you wire a real
+wallet.
 
 ## A policy file looks like this
 
