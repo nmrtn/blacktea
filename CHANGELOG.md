@@ -8,7 +8,7 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
-## `@nmrtn/blacktea` v0.1.1 — 2026-05-28
+## `@nmrtn/blacktea` v0.1.1 - 2026-05-28
 
 Performance: faster startup, lighter footprint. No API changes.
 
@@ -28,10 +28,10 @@ The `@nmrtn/blacktea-mcp` server does not need a new release: it depends on
 `@nmrtn/blacktea` `^0.1.0`, so `npx -y @nmrtn/blacktea-mcp` resolves the fixed
 SDK automatically.
 
-## `@nmrtn/blacktea` v0.1.0 — 2026-05-28
+## `@nmrtn/blacktea` v0.1.0 - 2026-05-28
 
 First minor release. Adds the two-phase payment API that makes
-out-of-process human approval possible — the missing piece for chat
+out-of-process human approval possible: the missing piece for chat
 agents (Hermes, OpenClaw, Claude Desktop) where the human is reachable
 only through the agent, not through a blocking in-process callback.
 
@@ -54,14 +54,14 @@ only through the agent, not through a blocking in-process callback.
   changes. The in-process approval channels (`console`, `callback`)
   still work exactly as before.
 
-## `@nmrtn/blacktea-mcp` v0.1.0 — 2026-05-28
+## `@nmrtn/blacktea-mcp` v0.1.0 - 2026-05-28
 
 In-conversation approval. The headline feature for personal-agent use.
 
 ### Added
 
 - **`approve_payment` and `reject_payment` tools.** When the policy says
-  a payment needs approval, the `pay` tool no longer fails — it returns
+  a payment needs approval, the `pay` tool no longer fails: it returns
   `status: "approval_required"` with an `intent_id` and the amount, and
   holds the payment in memory. The agent relays the amount to the human;
   on a yes, the agent calls `approve_payment` with the `intent_id` and
@@ -82,7 +82,7 @@ In-conversation approval. The headline feature for personal-agent use.
   `pay.stage`/`pay.complete` API).
 - Startup banner now reports the active rail: `… ready. rail=mock …`.
 
-## `@nmrtn/blacktea` v0.0.4 — 2026-05-27
+## `@nmrtn/blacktea` v0.0.4 - 2026-05-27
 
 Adds `mockWallet`, a no-network rail adapter. The reason this exists:
 trying the library used to require a Coinbase Developer Platform
@@ -106,7 +106,7 @@ a running x402 endpoint. That's fine for production but brutal for
 - `VERSION` exported from `@nmrtn/blacktea` was stale at `"0.0.1"` since
   the initial release. Now matches `package.json`.
 
-## `@nmrtn/blacktea-mcp` v0.0.3 — 2026-05-27
+## `@nmrtn/blacktea-mcp` v0.0.3 - 2026-05-27
 
 ### Fixed
 
@@ -115,7 +115,7 @@ a running x402 endpoint. That's fine for production but brutal for
   Previously, `audit_query` read from the env-resolved path while
   `pay()` wrote to the SDK's default `./.blacktea/history.jsonl`
   (resolved against whatever `cwd` the MCP client spawned the server
-  in — usually `/` or `$HOME`, never predictable). The two diverged
+  in, usually `/` or `$HOME`, never predictable). The two diverged
   silently and `audit_query` returned stale or empty data. Now one
   path, one store, both consumers use the same file.
 
@@ -129,7 +129,7 @@ a running x402 endpoint. That's fine for production but brutal for
 
 ---
 
-## `@nmrtn/blacktea` v0.0.3 — 2026-05-26
+## `@nmrtn/blacktea` v0.0.3 - 2026-05-26
 
 Security patch. Run a `/cso` self-audit, found a fail-open on the CLI, fixed it.
 
@@ -148,14 +148,14 @@ Security patch. Run a `/cso` self-audit, found a fail-open on the CLI, fixed it.
   uses explicit-undefined check. Six regression tests added.
 
   This was a HIGH-severity finding in the day-one self-audit. The SDK's
-  programmatic API was never affected — only the CLI surface.
+  programmatic API was never affected, only the CLI surface.
 
 ### Internal
 
 - `.gstack/` added to `.gitignore` so security audit reports never accidentally
   commit.
 
-## `@nmrtn/blacktea-mcp` v0.0.2 — 2026-05-26
+## `@nmrtn/blacktea-mcp` v0.0.2 - 2026-05-26
 
 Security patch + install fix.
 
@@ -182,7 +182,7 @@ Security patch + install fix.
 
 ---
 
-## `@nmrtn/blacktea` v0.0.2 — 2026-05-26
+## `@nmrtn/blacktea` v0.0.2 - 2026-05-26
 
 Initial CLI release. Adds the `blacktea` shell binary alongside the SDK.
 
@@ -192,7 +192,7 @@ Initial CLI release. Adds the `blacktea` shell binary alongside the SDK.
   5=no eligible rail, 6=rail unavailable, 7=validation, 8=policy parse.
 - JSON output by default so agents can parse it.
 
-## `@nmrtn/blacktea-mcp` v0.0.1 — 2026-05-26
+## `@nmrtn/blacktea-mcp` v0.0.1 - 2026-05-26
 
 Initial MCP release. Stdio JSON-RPC server exposing `pay` and `audit_query`
 to Claude Desktop, Cursor, and any MCP-aware client.
@@ -201,8 +201,8 @@ to Claude Desktop, Cursor, and any MCP-aware client.
 `@nmrtn/blacktea` via `file:..`, which doesn't resolve at install time.
 Upgrade to `@nmrtn/blacktea-mcp@0.0.2`.
 
-## `@nmrtn/blacktea` v0.0.1 — 2026-05-26
+## `@nmrtn/blacktea` v0.0.1 - 2026-05-26
 
-First publish. SDK only — `blacktea()` factory, x402 rail adapter, JSON
+First publish. SDK only: `blacktea()` factory, x402 rail adapter, JSON
 policy DSL with 10 operators + 3 combinators, file-backed history store,
 in-memory LRU idempotency, typed errors.
