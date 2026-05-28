@@ -20,7 +20,7 @@ style so the PR reads native there.
 
 ## How each gets submitted
 
-### ClawHub (OpenClaw) — done
+### ClawHub (OpenClaw): done
 
 ```bash
 npm i -g clawhub
@@ -32,20 +32,20 @@ clawhub skill publish packaging/blacktea --slug blacktea --name "blacktea" \
 Appears in `openclaw skills search` and on clawhub.ai. Install:
 `openclaw skills install blacktea`.
 
-### Nous MCP catalog (Hermes) — PR
+### Nous MCP catalog (Hermes): PR
 
 Copy `hermes-mcp-catalog/blacktea/manifest.yaml` to
 `optional-mcps/blacktea/manifest.yaml` in a fork of `NousResearch/hermes-agent`
 and open a PR. Nous staff review and merge. Once merged:
 `hermes mcp install blacktea`.
 
-### HermesHub (Hermes) — PR
+### HermesHub (Hermes): PR
 
 Copy `hermeshub/blacktea/SKILL.md` to `skills/blacktea/SKILL.md` in a fork of
 `amanning3390/hermeshub` and open a PR. An automated scanner runs on the PR.
 Install: `hermes skills install github:amanning3390/hermeshub/skills/blacktea`.
 
-### awesome-hermes-agent — PR
+### awesome-hermes-agent: PR
 
 Add one entry under "Skills & Plugins → Community Skills" in
 `0xNyk/awesome-hermes-agent`.
