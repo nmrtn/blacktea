@@ -6,8 +6,9 @@
 
 Spending controls for AI agents paying online.
 
-<!-- DEMO: drop the recorded Telegram demo at docs/demo.gif (replace this placeholder). -->
-![blacktea demo: a personal agent asks before it spends, then settles on-chain after you approve](docs/demo.gif)
+<p align="center">
+  <img src="docs/demo.gif" width="300" alt="blacktea demo: a personal agent asks before it spends, then settles on-chain after you approve" />
+</p>
 
 > Above: a personal agent (Hermes, over Telegram) is asked to buy a paid
 > report. blacktea holds the payment, the agent asks for approval in the chat,
