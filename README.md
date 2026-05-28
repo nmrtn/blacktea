@@ -6,16 +6,6 @@
 
 Spending controls for AI agents paying online.
 
-<p align="center">
-  <img src="docs/demo.gif" width="300" alt="blacktea demo: a personal agent asks before it spends, then settles on-chain after you approve" />
-</p>
-
-> Above: a personal agent (Hermes, over Telegram) is asked to buy a paid
-> report. blacktea holds the payment, the agent asks for approval in the chat,
-> and only after you say "yes" does it settle: 0.01 USDC on Base Sepolia. That
-> settlement is real and verifiable on-chain:
-> [`0x11f759ad…`](https://sepolia.basescan.org/tx/0x11f759ad2f5dc6c7153454ab75c00e85f2791ea4aa6388ea47e76a19ed4632a3).
-
 ```typescript
 import { blacktea } from "@nmrtn/blacktea";
 import { x402Wallet } from "@nmrtn/blacktea/adapters";
@@ -57,6 +47,7 @@ await pay({
 
 - [Why this exists](#why-this-exists)
 - [What it does](#what-it-does)
+- [Demo](#demo)
 - [Install](#install)
 - [Try it in 30 seconds](#try-it-in-30-seconds-no-wallet-needed)
 - [Try it for real](#try-it-for-real)
@@ -77,6 +68,18 @@ Today people patch this together themselves with YAML configs, Slack webhooks, a
 - Approval flow when a rule says "ask the human first."
 - Audit log of every payment, including the agent's own stated reason for spending it.
 - Works with x402 today (an open protocol for paying for HTTP resources with stablecoins, USDC on Base). Architecture is rail-pluggable so AP2, ACP, SEPA, ACH, and card adapters can be added later as separate packages.
+
+## Demo
+
+<p align="center">
+  <img src="docs/demo.gif" width="300" alt="blacktea demo: a personal agent asks before it spends, then settles on-chain after you approve" />
+</p>
+
+A personal agent (Hermes, over Telegram) is asked to buy a paid report.
+blacktea holds the payment, the agent asks for approval in the chat, and
+only after you say "yes" does it settle: 0.01 USDC on Base Sepolia. That
+settlement is real and verifiable on-chain:
+[`0x11f759ad…`](https://sepolia.basescan.org/tx/0x11f759ad2f5dc6c7153454ab75c00e85f2791ea4aa6388ea47e76a19ed4632a3).
 
 ## Install
 
