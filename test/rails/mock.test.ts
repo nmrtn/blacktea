@@ -75,7 +75,7 @@ describe("mockWallet", () => {
   });
 
   it("does not make any network call (settle is fast and offline)", async () => {
-    // No setup needed beyond instantiating mockWallet — if it tried to fetch
+    // No setup needed beyond instantiating mockWallet - if it tried to fetch
     // anything in preflight/settle, this test would either hang or fail in
     // a sandboxed CI environment with no network access.
     const rail = mockWallet({ amount: 0.1 });

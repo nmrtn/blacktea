@@ -16,7 +16,7 @@
  * does NOT block or settle. It returns status "approval_required" with an
  * intent_id. The agent relays the amount to the human; if they approve, the
  * agent calls approve_payment with that intent_id (or reject_payment to
- * decline). This is the in-conversation approval pattern — the agent is the
+ * decline). This is the in-conversation approval pattern - the agent is the
  * channel between the human and the policy.
  *
  * All config via env vars (set by the MCP client when it spawns the server):
@@ -83,7 +83,7 @@ if (!existsSync(policyPath)) {
 // Explicitly construct the history store at historyPath so pay() writes
 // and audit_query reads use the SAME file. Without this, the SDK's default
 // branch resolves "./.blacktea/history.jsonl" from process.cwd() (whatever
-// directory the MCP client spawned us in — often "/" or "$HOME", never
+// directory the MCP client spawned us in - often "/" or "$HOME", never
 // predictable) while audit_query reads the env-resolved historyPath. The
 // two would diverge silently and audit_query would return "no history yet"
 // while payments were being recorded somewhere else.
@@ -133,7 +133,7 @@ function err(code: string, message: string, extra: Record<string, unknown> = {})
   };
 }
 
-// Not isError — a held payment is a normal control-flow pause, not a failure.
+// Not isError - a held payment is a normal control-flow pause, not a failure.
 // The agent should read this, ask the human, and call approve_payment.
 function pending(payload: Record<string, unknown>) {
   return {
@@ -153,7 +153,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "pay",
       description:
-        'Pay for a paid HTTP resource via x402. The endpoint may charge USDC on Base. Use when you need data from a paywalled API, a premium data feed, or any x402-enabled URL. blacktea applies the spending policy before signing. IMPORTANT: if the policy requires human approval, this returns status "approval_required" with an intent_id and an amount — do NOT treat that as a failure. Tell the human the amount and what it\'s for, and if they approve, call approve_payment with the intent_id (or reject_payment to decline). On success returns the response body and a payment receipt.',
+        'Pay for a paid HTTP resource via x402. The endpoint may charge USDC on Base. Use when you need data from a paywalled API, a premium data feed, or any x402-enabled URL. blacktea applies the spending policy before signing. IMPORTANT: if the policy requires human approval, this returns status "approval_required" with an intent_id and an amount - do NOT treat that as a failure. Tell the human the amount and what it\'s for, and if they approve, call approve_payment with the intent_id (or reject_payment to decline). On success returns the response body and a payment receipt.',
       inputSchema: {
         type: "object",
         properties: {
@@ -266,7 +266,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         });
       }
 
-      // approval_required — hold it and tell the agent to ask the human.
+      // approval_required - hold it and tell the agent to ask the human.
       const { staged } = result;
       pruneExpiredStaged();
       stagedIntents.set(staged.intent_id, { staged, expiresAt: Date.now() + STAGED_TTL_MS });
@@ -307,7 +307,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return ok({ receipt: intent.receipt, data: intent.data });
     } catch (caught) {
       // Settle failed (rail down, signature error). The staged intent is
-      // consumed either way — a half-failed settle shouldn't be retryable
+      // consumed either way - a half-failed settle shouldn't be retryable
       // by replaying the same approval.
       stagedIntents.delete(intentId);
       if (isBlackteaError(caught)) {

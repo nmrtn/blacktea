@@ -22,7 +22,7 @@ const TimeOfDay = z.string().regex(/^\d{2}:\d{2}$/, "expected HH:MM");
 // Used by wallet_in and intent operators that need a list source.
 const StringList = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 
-// "would_spend" — stateful, structured.
+// "would_spend" - stateful, structured.
 const WouldSpend = z
   .object({
     window_hours: z.number().positive(),
@@ -73,7 +73,7 @@ export const ConditionSchema: z.ZodType<PolicyCondition> = z.lazy(() =>
 export const ApprovalChannelSchema = z.enum(["console", "callback"]);
 export type ApprovalChannel = z.infer<typeof ApprovalChannelSchema>;
 
-// Action — either approve, ask, or reject. Discriminated by which key is present.
+// Action - either approve, ask, or reject. Discriminated by which key is present.
 export const ActionSchema = z.union([
   z.object({ approve: z.literal(true) }).strict(),
   z

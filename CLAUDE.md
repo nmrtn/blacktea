@@ -14,11 +14,11 @@ adapter packages.
 
 Three integration surfaces, one codebase:
 
-- **SDK** — `@nmrtn/blacktea` (`blacktea(opts)` factory). Direct TypeScript import.
-- **CLI** — `blacktea` bin in the same npm package. Shell-friendly, for agent
+- **SDK** - `@nmrtn/blacktea` (`blacktea(opts)` factory). Direct TypeScript import.
+- **CLI** - `blacktea` bin in the same npm package. Shell-friendly, for agent
   platforms with shell tools (Claude Code, Cursor, Cline, Aider, OpenClaw,
   Hermes, Devin).
-- **MCP server** — `@nmrtn/blacktea-mcp` (separate npm package, lives in
+- **MCP server** - `@nmrtn/blacktea-mcp` (separate npm package, lives in
   `mcp-server/`). Stdio JSON-RPC server for Claude Desktop, Cursor chat mode.
 
 User-facing pitch is in `README.md`. Policy DSL semantics live in
@@ -28,7 +28,7 @@ behavior; the library exists to make them true.
 ## Commands
 
 ```bash
-# Root package (@nmrtn/blacktea — SDK + CLI)
+# Root package (@nmrtn/blacktea - SDK + CLI)
 npm install
 npm test                    # Vitest, mock x402 facilitator, ~10s
 npm run typecheck           # tsc --noEmit
@@ -36,7 +36,7 @@ npm run build               # tsc + chmod +x dist/cli.js
 npm run lint                # biome check .
 npm run lint:fix            # biome check --write .
 
-# MCP server (@nmrtn/blacktea-mcp — sibling package)
+# MCP server (@nmrtn/blacktea-mcp - sibling package)
 cd mcp-server
 npm install
 npm test                    # spawns the built binary, drives JSON-RPC over stdio
@@ -67,7 +67,7 @@ in `src/policy/`.
 
 **3. Rail adapters.** A `RailAdapter` exposes `name`, `supports(input)`,
 `preflight(input)`, `settle(input, requirement, opts)`. The preflight/settle
-split mirrors the x402 request-response shape — preflight learns what payment
+split mirrors the x402 request-response shape - preflight learns what payment
 is required, settle signs and submits. v1 ships only `x402Wallet(cfg)`. Future
 rails (SEPA push, cards, AP2, ACP) implement the same interface. Lives in
 `src/rails/`.
@@ -127,7 +127,7 @@ a strong reason and a written argument.
 - Do not bundle a Slack or email integration into the core package. Optional
   `@nmrtn/blacktea-slack` and similar can ship as separate packages.
 - Do not log secrets. The audit log captures URL, intent, recipient wallet,
-  and amount — never the signing private key. The default audit sink writes
+  and amount - never the signing private key. The default audit sink writes
   JSON to stdout, so any future field addition needs to be reviewed against
   this rule.
 
@@ -141,7 +141,7 @@ serialize the key.
 
 The CLI's `--max-amount` flag uses a strict `Number()` parser that exits
 with code 7 (`invalid_input`) on non-positive-finite values. Do not relax
-this — earlier `Number.parseFloat` + truthy-check version silently dropped
+this - earlier `Number.parseFloat` + truthy-check version silently dropped
 the user-specified cap on bad input. Same hardening applies on the MCP
 server's `max_amount` argument.
 

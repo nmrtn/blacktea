@@ -57,7 +57,7 @@ program
     // Strict parser. Two JS footguns to dodge:
     //   1. Number.parseFloat("1usd") returns 1 (reads as much as it can),
     //      which would silently accept garbage suffixes. We use Number()
-    //      instead — it requires the WHOLE string to be a valid number.
+    //      instead - it requires the WHOLE string to be a valid number.
     //   2. The previous truthy check on the result dropped NaN and 0 silently,
     //      a fail-open of the user's safety cap. Exit non-zero on any
     //      non-positive-finite value.

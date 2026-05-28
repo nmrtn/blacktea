@@ -691,7 +691,7 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       expect(result.staged.intent).toBe(baseInput.intent);
       expect(result.staged.rule_fired).toBe("rule[0]");
       expect(result.staged.intent_id).toMatch(/^intent_/);
-      // Crucially: nothing settled, nothing recorded — the money is held.
+      // Crucially: nothing settled, nothing recorded - the money is held.
       expect(rail.settleCalls).toHaveLength(0);
       expect(history.events).toHaveLength(0);
     });

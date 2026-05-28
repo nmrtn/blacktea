@@ -216,7 +216,7 @@ describe("CLI", () => {
         },
       );
       // Whatever happens after parsing (rail_unavailable, network error,
-      // etc.), the exit code must NOT be 7 — the parser accepted the value.
+      // etc.), the exit code must NOT be 7 - the parser accepted the value.
       expect(result.status).not.toBe(7);
     });
 
