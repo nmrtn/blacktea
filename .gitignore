@@ -12,7 +12,7 @@ coverage/
 # library state at runtime (history, etc)
 .blacktea/
 
-# local gstack artifacts (security reports, plans, etc — never commit)
+# local gstack artifacts (security reports, plans, etc; never commit)
 .gstack/
 
 # editor

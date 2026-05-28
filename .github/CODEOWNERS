@@ -1,4 +1,4 @@
-# GitHub CODEOWNERS — pull request review requirements.
+# GitHub CODEOWNERS: pull request review requirements.
 #
 # Format: <path-pattern> <owner1> <owner2> ...
 # Last matching rule wins.
