@@ -205,7 +205,9 @@ describe("x402Wallet", () => {
       // once, and real fetch never hands back the same consumed object twice.
       const wrappedFetch = vi
         .fn()
-        .mockImplementation(() => Promise.resolve(new Response("{}", { status: 200, headers: {} })));
+        .mockImplementation(() =>
+          Promise.resolve(new Response("{}", { status: 200, headers: {} })),
+        );
       mockWrapFetchWithPayment.mockReturnValue(wrappedFetch);
 
       const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
