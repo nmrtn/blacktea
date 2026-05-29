@@ -43,7 +43,7 @@ import {
 } from "@nmrtn/blacktea";
 import { mockWallet, x402Wallet } from "@nmrtn/blacktea/adapters";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 const PACKAGE_NAME = "@nmrtn/blacktea-mcp";
 
 // How long a staged (awaiting-approval) payment stays valid before it
