@@ -1,0 +1,3 @@
+# Trusted recipients. One wallet per line.
+0xtrusted1
+0xtrusted2

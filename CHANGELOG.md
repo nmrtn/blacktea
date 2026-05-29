@@ -8,6 +8,40 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
+## Unreleased
+
+Pre-launch correctness fixes from the 2026-05-29 review. Version bump + publish
+pending.
+
+### `@nmrtn/blacktea` (SDK + CLI)
+
+- **Fixed: `wallet_in` file paths now work.** The loader resolves a
+  file-path-form `wallet_in` (e.g. `"./blocklist.txt"`) into an inline array
+  at load time: one wallet per line, `#` comments and blank lines ignored,
+  resolved relative to the policy file's directory. The documented
+  sanctions/blocklist policy in the README and cookbook now runs instead of
+  throwing at evaluation time.
+- **Fixed: x402 non-JSON responses no longer lose data.** When a paid endpoint
+  returns plain text, `settle` now returns the raw text instead of silently
+  dropping it to `undefined`. An empty body still resolves to `undefined`.
+- **Changed: policy/config errors now link to the cookbook.** `PolicyParseError`
+  and the CLI "policy file not found" message point at
+  `docs/policy-cookbook.md` so a stuck developer has a next step.
+
+### `@nmrtn/blacktea-mcp` (MCP server)
+
+- **Fixed: mock mode runs with no wallet.** `BLACKTEA_RAIL=mock` no longer
+  requires `EVM_PRIVATE_KEY`. The rail is detected before the key check, so the
+  no-wallet demo path advertised in the README actually works.
+
+### Docs
+
+- Corrected the cookbook's false "file locking" claim: the default
+  `FileBackedHistoryStore` does NOT lock, and concurrent writers can corrupt the
+  history file. Give each agent its own history path.
+
+---
+
 ## `@nmrtn/blacktea` v0.1.1 - 2026-05-28
 
 Performance: faster startup, lighter footprint. No API changes.

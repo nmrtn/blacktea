@@ -88,7 +88,7 @@ program
     if (!existsSync(resolve(opts.policy))) {
       printError({
         code: "config_error",
-        message: `Policy file not found: ${resolve(opts.policy)}`,
+        message: `Policy file not found: ${resolve(opts.policy)}. Pass --policy <path>, or see the cookbook: https://github.com/nmrtn/blacktea/blob/main/docs/policy-cookbook.md`,
       });
       process.exit(2);
     }

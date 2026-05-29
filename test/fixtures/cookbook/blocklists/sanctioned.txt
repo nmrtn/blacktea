@@ -1,0 +1,4 @@
+# Sanctioned recipients. One wallet per line. Blank lines and # comments ignored.
+0xabc
+
+0x000000000000000000000000000000000000dead  # known burn address

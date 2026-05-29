@@ -11,6 +11,12 @@ abstract class BlackteaError extends Error {
 }
 
 /**
+ * Where to send a developer who hit a policy error. Appended to policy parse
+ * messages so a stuck reader always has a next step, not just a stack trace.
+ */
+const POLICY_DOCS_URL = "https://github.com/nmrtn/blacktea/blob/main/docs/policy-cookbook.md";
+
+/**
  * Thrown at agent factory time (or first pay() if loaded lazily) when the
  * policy file fails schema validation.
  */
@@ -20,7 +26,7 @@ export class PolicyParseError extends BlackteaError {
     message: string,
     public readonly issues?: unknown,
   ) {
-    super(message);
+    super(`${message}\nSee the policy cookbook: ${POLICY_DOCS_URL}`);
     this.name = "PolicyParseError";
   }
 }

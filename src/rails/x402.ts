@@ -174,12 +174,16 @@ export function x402Wallet(cfg: X402WalletConfig): RailAdapter {
         throw new RailUnavailableError(railName, `settle returned non-OK: ${detail}`);
       }
 
+      // Read the body once as text, then try to parse it as JSON. Not all
+      // paid endpoints return JSON; when parsing fails we keep the raw text
+      // so the caller still receives what they paid for (an empty body
+      // becomes undefined).
+      const rawBody = await response.text();
       let data: unknown;
       try {
-        data = await response.json();
+        data = rawBody.length > 0 ? JSON.parse(rawBody) : undefined;
       } catch {
-        // Not all paid endpoints return JSON. Fall back to text.
-        data = undefined;
+        data = rawBody;
       }
 
       const { txHash } = parseSettlementHeader(response.headers.get("x-payment-response"));

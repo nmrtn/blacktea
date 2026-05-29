@@ -52,23 +52,25 @@ const STAGED_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 // ---------- config from env ----------
 
+// Mock rail mode: no network, no real money, no wallet. Set BLACKTEA_RAIL=mock
+// to try the server (policy engine, approval flow, audit) against a simulated
+// merchant. BLACKTEA_MOCK_AMOUNT sets the price the mock "charges" (default
+// 0.01) so you can exercise auto-approve vs. approval-required vs. reject.
+// Read this BEFORE the key check: mock mode must run with no EVM_PRIVATE_KEY.
+const useMockRail = process.env.BLACKTEA_RAIL === "mock";
+const mockAmount = Number(process.env.BLACKTEA_MOCK_AMOUNT ?? "0.01");
+
 const pk = process.env.EVM_PRIVATE_KEY;
-if (!pk || !pk.startsWith("0x")) {
+if (!useMockRail && (!pk || !pk.startsWith("0x"))) {
   console.error(`${PACKAGE_NAME}: EVM_PRIVATE_KEY env var is missing or invalid.`);
-  console.error("Set it in your MCP client config under the env block.");
+  console.error("Set it in your MCP client config under the env block,");
+  console.error("or set BLACKTEA_RAIL=mock to run without a wallet.");
   process.exit(1);
 }
 
 const chain = process.env.BLACKTEA_CHAIN ?? "base-sepolia";
 const policyPath = resolve(process.env.BLACKTEA_POLICY ?? "./policy.json");
 const historyPath = resolve(process.env.BLACKTEA_HISTORY ?? "./.blacktea/history.jsonl");
-
-// Mock rail mode: no network, no real money. Set BLACKTEA_RAIL=mock to try
-// the server (policy engine, approval flow, audit) against a simulated
-// merchant. BLACKTEA_MOCK_AMOUNT sets the price the mock "charges" (default
-// 0.01) so you can exercise auto-approve vs. approval-required vs. reject.
-const useMockRail = process.env.BLACKTEA_RAIL === "mock";
-const mockAmount = Number(process.env.BLACKTEA_MOCK_AMOUNT ?? "0.01");
 
 if (!existsSync(policyPath)) {
   console.error(`${PACKAGE_NAME}: policy file not found at ${policyPath}.`);
@@ -92,7 +94,8 @@ const history = new FileBackedHistoryStore({ path: historyPath });
 const pay = blacktea({
   source: useMockRail
     ? mockWallet({ amount: Number.isFinite(mockAmount) ? mockAmount : 0.01 })
-    : x402Wallet({ privateKey: pk, chain }),
+    : // pk is guaranteed defined here: the guard above exits unless mock mode.
+      x402Wallet({ privateKey: pk as string, chain }),
   policy: policyPath,
   history,
   audit: () => {

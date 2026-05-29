@@ -90,16 +90,23 @@ npm install @nmrtn/blacktea
 ## Try it in 30 seconds, no wallet needed
 
 A `mockWallet` adapter ships in the same package. No x402 server, no USDC,
-no testnet. Useful for trying the policy engine end to end before wiring
-up a real wallet.
+no testnet. The policy is inline, so there are no files to create either:
+copy this, run it, watch the policy engine fire.
 
 ```typescript
 import { blacktea } from "@nmrtn/blacktea";
 import { mockWallet } from "@nmrtn/blacktea/adapters";
 
+// No files. No wallet. Inline policy, simulated wallet.
 const pay = blacktea({
-  policy: "./policy.json",
   source: mockWallet({ amount: 0.5 }), // pretend the server asks for 0.5 USDC
+  policy: {
+    rules: [
+      { if: { amount_lt: 1 }, then: { approve: true } }, // auto-approve under 1 USDC
+      { if: { amount_gte: 1 }, then: { approval: "console" } }, // ask first at 1+
+    ],
+    default: { approval: "console" },
+  },
 });
 
 const intent = await pay({
@@ -113,8 +120,13 @@ console.log(intent.receipt);
 ```
 
 The receipt is marked `simulated: true`. The audit log still writes. The
-policy engine still fires. Approval callbacks still get called. Swap
-`mockWallet` for `x402Wallet` when you're ready to spend real money.
+policy engine still fires. Approval callbacks still get called.
+
+Want to see the ask-before-spending moment? Bump `mockWallet({ amount: 2 })`.
+Now the amount crosses the `amount_gte: 1` rule, so blacktea holds the payment
+for approval instead of auto-approving. No wallet, no network, just the policy
+doing its job. Swap `mockWallet` for `x402Wallet` when you're ready to spend
+real money.
 
 ## Try it for real
 

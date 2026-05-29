@@ -106,7 +106,7 @@ describe("CLI", () => {
       expect(decision.rule_fired).toBe("default");
     });
 
-    it("supports an explicit wallet recipient", () => {
+    it("resolves a wallet_in file path and rejects a sanctioned recipient", () => {
       const r = runCli([
         "policy",
         "test",
@@ -118,12 +118,30 @@ describe("CLI", () => {
         "--wallet",
         "0xabc",
       ]);
-      // 03-reject-sanctioned uses a file path for wallet_in which is
-      // unresolved; the evaluator throws a clear error. The CLI surfaces
-      // it via a non-zero exit.
-      expect(r.status).toBe(1);
-      const err = JSON.parse(r.stderr);
-      expect(err.error.code).toBe("evaluation_error");
+      // 03-reject-sanctioned uses a file path for wallet_in. The loader now
+      // resolves blocklists/sanctioned.txt (which contains 0xabc) into an
+      // inline array, so the rule fires and the payment is rejected.
+      expect(r.status).toBe(0);
+      const decision = JSON.parse(r.stdout);
+      expect(decision.kind).toBe("reject");
+      expect(decision.reason).toBe("sanctioned");
+    });
+
+    it("allows a recipient that is not in the wallet_in blocklist file", () => {
+      const r = runCli([
+        "policy",
+        "test",
+        "test/fixtures/cookbook/03-reject-sanctioned.json",
+        "--amount",
+        "5",
+        "--url",
+        "https://api.example.com",
+        "--wallet",
+        "0xnotsanctioned",
+      ]);
+      expect(r.status).toBe(0);
+      const decision = JSON.parse(r.stdout);
+      expect(decision.kind).toBe("allow");
     });
   });
 

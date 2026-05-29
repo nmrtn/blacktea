@@ -283,7 +283,7 @@ The `intent` string is fuzzy by nature. The agent may say `"send funds to John"`
 
 - **Rule ordering matters.** Put absolute caps at the top, then sanctions, then allowlist, then conditional rules. The library lints but does not auto-fix.
 - **`time_zone` defaults to UTC.** If you do not set it, `time_of_day_between` runs in UTC, which is probably not what you want.
-- **History is per-file.** Two processes sharing the same `policy.json` and the same history file work fine (file locking). Two processes with the SAME policy but DIFFERENT history files will not share daily caps.
+- **History is per-file, and there is no file locking.** Two processes writing the same history file can corrupt each other's writes (the default `FileBackedHistoryStore` appends without a lock). Give each agent process its own history path, or swap in a `HistoryStore` backed by Redis/SQLite for shared caps. Two processes with the SAME policy but DIFFERENT history files will not share daily caps.
 - **Dry-run history is separate.** Dry-run mode writes to a different history file, so testing in dry-run does not exhaust your real daily cap.
 - **Intent strings are fuzzy.** Keyword matching on free-form text is a coarse net. Do not assume it catches everything.
 - **Reject codes are not enums.** They are arbitrary strings. Pick stable snake_case codes so you can grep them in logs.

@@ -201,9 +201,11 @@ describe("x402Wallet", () => {
     });
 
     it("lazily initialises the signer on first call", async () => {
+      // Return a FRESH Response per call: a Response body can only be read
+      // once, and real fetch never hands back the same consumed object twice.
       const wrappedFetch = vi
         .fn()
-        .mockResolvedValue(new Response("{}", { status: 200, headers: {} }));
+        .mockImplementation(() => Promise.resolve(new Response("{}", { status: 200, headers: {} })));
       mockWrapFetchWithPayment.mockReturnValue(wrappedFetch);
 
       const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
@@ -251,7 +253,7 @@ describe("x402Wallet", () => {
       ).rejects.toThrow(/signature rejected/);
     });
 
-    it("returns data=undefined if the response body is not JSON", async () => {
+    it("returns the raw text if the response body is not JSON", async () => {
       mockWrapFetchWithPayment.mockReturnValue(
         vi.fn().mockResolvedValue(
           new Response("just some text", {
@@ -263,8 +265,25 @@ describe("x402Wallet", () => {
       const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
 
       const result = await rail.settle({ url: "https://x.com/paid", intent: "t" }, requirement, {});
-      expect(result.data).toBeUndefined();
+      // A paid endpoint that returns plain text must not silently lose the
+      // purchased data; the caller gets the raw text back.
+      expect(result.data).toBe("just some text");
       expect(result.receipt.rail_charge_id).toBe("0xabc");
+    });
+
+    it("returns data=undefined when the response body is empty", async () => {
+      mockWrapFetchWithPayment.mockReturnValue(
+        vi.fn().mockResolvedValue(
+          new Response("", {
+            status: 200,
+            headers: { "x-payment-response": makeSettlementHeader("0xabc") },
+          }),
+        ),
+      );
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+
+      const result = await rail.settle({ url: "https://x.com/paid", intent: "t" }, requirement, {});
+      expect(result.data).toBeUndefined();
     });
   });
 });
