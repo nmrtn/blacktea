@@ -47,6 +47,11 @@ export {
   isBlackteaError,
 } from "./errors.js";
 
+export type {
+  ApprovalFinalState,
+  ApprovalRecord,
+  ApprovalRoute,
+} from "./approval-record.js";
 export type { Policy, PolicyAction, PolicyCondition, PolicyRule } from "./policy/schema.js";
 export { PolicySchema } from "./policy/schema.js";
 export { loadPolicy } from "./policy/load.js";
