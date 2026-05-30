@@ -1,11 +1,15 @@
 /**
  * ApprovalRecord: the structured receipt blacktea mints when a payment
- * crosses the approval boundary.
+ * crosses the approval boundary AND a human is in the loop.
  *
- * The audit log keeps the full event stream. An ApprovalRecord sits on top
- * of it as the queryable decision boundary: one record per intent_id,
- * append-only, written into the same audit JSONL for v1 (signing deferred
- * until the shape is stable).
+ * Scope: a record exists only when the policy returned `approval` and a
+ * staged intent was created. Policy rejects (the policy fires `reject`
+ * from the start) never produce an ApprovalRecord; those are captured in
+ * the audit stream as `payment_denied` events. This keeps the record
+ * scoped to "a human made a decision," not "the policy made a decision."
+ *
+ * Storage: append-only in the same audit JSONL for v1, tagged with
+ * `event: "approval_record"`. Signing deferred until the shape is stable.
  *
  * Status: design draft, not yet emitted by agent.ts. Implementation lands
  * in a follow-up PR. See issue #5.
@@ -17,7 +21,18 @@
  */
 export type ApprovalRoute = "allow" | "reject" | "human_review";
 
-/** Lifecycle state of an in-chat approval. */
+/**
+ * Lifecycle state of an in-chat approval. Every state requires a staged
+ * intent to have existed; policy rejects without a stage never reach this
+ * enum (they live in the audit stream as `payment_denied`).
+ *
+ *   staged    -> waiting for the human
+ *   approved  -> human approved, settle in flight
+ *   denied    -> human rejected
+ *   expired   -> approval window elapsed without a decision
+ *   settled   -> post-approval settle succeeded (terminal happy path)
+ *   failed    -> post-approval settle failed (rail down, signature, etc)
+ */
 export type ApprovalFinalState =
   | "staged"
   | "approved"
@@ -59,9 +74,23 @@ export interface ApprovalRecord {
    * if the request changes between approval and settle, the record is
    * invalid and settle must refuse.
    *
-   * v1 input shape (subject to review):
-   *   sha256(method + "\n" + url + "\n" + amount + "\n" + currency + "\n" +
-   *          (recipient_wallet ?? "") + "\n" + stableStringify(body))
+   * Format: a tagged string `<alg>:<canonicalization-version>:<hex>`. The
+   * tag is atomic with the value so callers can't mix records hashed under
+   * different rules. v1 uses `sha256:jcs-v1`:
+   *
+   *   "sha256:jcs-v1:" + sha256(JCS({
+   *     method: method.toUpperCase(),
+   *     url,
+   *     amount,
+   *     currency,
+   *     recipient_wallet: recipient_wallet ?? null,
+   *     body
+   *   }))
+   *
+   * JCS = RFC 8785 canonical JSON. Headers are intentionally excluded:
+   * they drift across clients and proxies, and anything that genuinely
+   * changes settlement semantics should be promoted into the explicit
+   * request shape before hashing.
    */
   params_hash: string;
 
