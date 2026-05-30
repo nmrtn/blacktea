@@ -27,43 +27,21 @@ comment.
 
 **Effort:** human ~half day / CC ~30min. Needs concurrency tests.
 
-### P1-1/3 — Two-phase approvals ignore the policy approval timeout
+---
 
-**What:** `approval.timeout_seconds` is honored in the one-shot callback/console
-path but dropped by `pay.stage()` (`src/agent.ts:334`). `StagedIntent`
-(`src/types.ts:115`) carries no expiry, and MCP applies a fixed 1-hour TTL
-(`mcp-server/src/index.ts:51`). A policy that says "approval expires in 60s" can
-still be approved much later through MCP.
+## Done in v0.1.3 (2026-05-29)
 
-**Why it matters:** A short approval window is a security control (a held payment
-shouldn't be approvable hours later). Today that control silently doesn't apply on
-the MCP/chat path, which is the headline integration.
+### ✅ P1-1/3 — Two-phase approvals honor the policy approval timeout
 
-**Fix:** Add `expires_at` to `StagedIntent`, set it in `stage()` from
-`decision.timeout_seconds`, check it in `complete()` (throw `ApprovalTimeoutError`
-when expired), and have the MCP server use the staged expiry instead of the fixed
-hour.
+Shipped in v0.1.3. `StagedIntent` carries `expires_at` (computed from
+`decision.timeout_seconds`); `pay.complete(staged, "approve")` throws
+`ApprovalTimeoutError` past expiry; late reject still works. MCP cleanup of its
+fixed-1h TTL lands with `@nmrtn/blacktea-mcp` 0.1.2.
 
-**Effort:** human ~half day / CC ~20min. Add expiry tests.
+### ✅ P1-5 — "audit" terminology clarified
 
-### P1-5 — "audit" surfaces only completed payments, not every state transition
-
-**What:** The architecture says the audit log records every state transition, but
-`history.record()` only fires on completion (`src/agent.ts:259`). CLI `audit show`
-and MCP `audit_query` read the history file (`src/cli.ts:137`,
-`mcp-server/src/index.ts:343`), so denials, approval requests, timeouts, failed
-settlements, and policy evaluations are invisible there. CLI/MCP also silence the
-audit sink (`mcp-server/src/index.ts:98`).
-
-**Why it matters:** For a spending-control product, "show me what my agent tried to
-spend" should include the things you blocked. Calling the completed-payments log
-"audit" is surprising and undersells the product.
-
-**Fix (pick one):**
-- Naming/docs: rename the CLI/MCP command to `payments`/`history` and stop calling
-  the history file "the audit log" in README/CLAUDE.md. Fast.
-- Real feature: have the default CLI/MCP audit sink persist every event to an
-  `audit.jsonl`, and have `audit show`/`audit_query` read THAT (history.jsonl stays
-  for cap math). More work, but it makes the documented behavior true.
-
-**Effort:** naming/docs human ~1h / CC ~15min; real audit sink human ~1 day / CC ~45min.
+Shipped in v0.1.3. CLI `audit` and MCP `audit_query` descriptions rewritten to
+say "the history of completed payments" with an explicit note that held / denied
+/ expired payments live in the audit sink, not in the history file. The bigger
+"persist every event to a real audit.jsonl" refactor stays deferred until a
+user asks; the naming was the load-bearing part.

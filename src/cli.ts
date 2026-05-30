@@ -36,7 +36,7 @@ import { PolicySchema } from "./policy/schema.js";
 import { x402Wallet } from "./rails/x402.js";
 import type { HistoryQuery } from "./types.js";
 
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 
 const program = new Command();
 program
@@ -134,11 +134,15 @@ program
 
 // ---------- audit ----------
 
-const audit = program.command("audit").description("Inspect the payment audit log.");
+const audit = program
+  .command("audit")
+  .description("Inspect the history of completed payments (the records pay() writes on settle).");
 
 audit
   .command("show")
-  .description("Print recent audit events from the history file.")
+  .description(
+    "Print recent completed payments from the history file. Held, denied, and expired payments live in the audit sink, not here.",
+  )
   .option("-n, --last <n>", "number of events to show", (v) => Number.parseInt(v, 10), 20)
   .option("--json", "output one JSON object per line")
   .option("--store <path>", "path to history file", "./.blacktea/history.jsonl")

@@ -332,6 +332,10 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     const { intentId, idempotencyKey, rail, requirement, policyInput, decision } = prep;
 
     if (decision.kind === "approval") {
+      // Honor the policy's timeout_seconds at stage time. complete() refuses
+      // to approve a stage past expires_at; the MCP server uses this instead
+      // of a fixed TTL for the staged-intents map.
+      const expiresAt = new Date(Date.now() + decision.timeout_seconds * 1000).toISOString();
       const staged: StagedIntent = {
         intent_id: intentId,
         amount: requirement.amount,
@@ -340,6 +344,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         recipient_url: input.url,
         intent: input.intent,
         rule_fired: decision.rule_fired,
+        expires_at: expiresAt,
         _input: input,
         _requirement: requirement,
         _opts: opts,
@@ -350,6 +355,8 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         amount: requirement.amount,
         currency: requirement.currency,
         rule_fired: decision.rule_fired,
+        expires_at: expiresAt,
+        timeout_seconds: decision.timeout_seconds,
       });
       return { outcome: "approval_required", staged };
     }
@@ -374,12 +381,25 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     decision: "approve" | "reject",
   ): Promise<PaymentIntent> {
     if (decision === "reject") {
+      // A late reject is still a reject. The payment was never going to
+      // settle anyway, so we accept it without checking expiry.
       emit(audit, "approval_received", staged.intent_id, { decision: "deny" });
       emit(audit, "payment_denied", staged.intent_id, {
         reason: "approval_denied",
         rule_fired: staged.rule_fired,
       });
       return makeDeniedIntent(staged);
+    }
+
+    // Approve path. Refuse if the policy's approval window has elapsed: a
+    // stage past expires_at must not become a payment, otherwise the
+    // policy's timeout_seconds is meaningless on the two-phase / MCP path.
+    const expiresAtMs = Date.parse(staged.expires_at);
+    if (Number.isFinite(expiresAtMs) && Date.now() > expiresAtMs) {
+      emit(audit, "approval_timed_out", staged.intent_id, {
+        expires_at: staged.expires_at,
+      });
+      throw new ApprovalTimeoutError(staged.intent_id);
     }
 
     emit(audit, "approval_received", staged.intent_id, { decision: "approve" });

@@ -8,6 +8,46 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
+## `@nmrtn/blacktea` v0.1.3 - 2026-05-29
+
+Pre-launch hardening pass.
+
+### Fixed
+
+- **Two-phase approvals now honor the policy's `timeout_seconds`.**
+  `pay.stage()` records `expires_at` on the staged intent (computed from
+  `decision.timeout_seconds`, default 600s). `pay.complete(staged, "approve")`
+  refuses and throws `ApprovalTimeoutError` if `expires_at` has passed; a
+  late reject is still accepted (the payment was never going to settle).
+  Closes the gap where a policy saying "approval expires in 60s" was silently
+  honored only on the one-shot callback/console path, not on stage/complete
+  or MCP.
+
+### Changed
+
+- **Breaking (type-level): `StagedIntent.expires_at` is required.** Callers
+  that constructed `StagedIntent` manually need to set it; the
+  `pay.stage()`-returned shape is filled in automatically.
+- `audit_staged` audit event now carries `expires_at` and `timeout_seconds`.
+- CLI `audit` subcommand help text rewritten: "Inspect the history of
+  completed payments" rather than "the audit log," to match what the command
+  actually reads (held / denied / expired payments live in the audit sink,
+  not the history file).
+
+---
+
+## `@nmrtn/blacktea-mcp` v0.1.2 - 2026-05-29
+
+### Changed
+
+- `audit_query` tool description clarified: held / denied / expired
+  payments are not in the history file; they live in the agent process's
+  audit sink. Same misleading text as the CLI, same fix.
+- Dependency floor bumped to `@nmrtn/blacktea@^0.1.3` so the approval
+  timeout enforcement reaches MCP users.
+
+---
+
 ## `@nmrtn/blacktea` v0.1.2 - 2026-05-29
 
 Pre-launch correctness fixes from the 2026-05-29 review.

@@ -120,6 +120,13 @@ export interface StagedIntent {
   recipient_url: string;
   intent: string;
   rule_fired: string;
+  /**
+   * ISO-8601 timestamp after which `pay.complete(staged, "approve")` will
+   * throw `ApprovalTimeoutError`. Computed from the policy's
+   * `decision.timeout_seconds` (default 600s) when the intent is staged.
+   * A late reject is still allowed; only approval is timeout-gated.
+   */
+  expires_at: string;
   /** @internal */
   _input: PayInput;
   /** @internal */

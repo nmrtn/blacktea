@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { blacktea } from "../src/agent.js";
-import { PolicyDeniedError } from "../src/errors.js";
+import { ApprovalTimeoutError, PolicyDeniedError } from "../src/errors.js";
 import type { Policy } from "../src/policy/schema.js";
 import type {
   AuditEvent,
@@ -783,6 +783,89 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       expect(names).toContain("payment_completed");
       // Every event carries the same intent id end to end.
       expect(audit.events.every((e) => e.intent_id === intentId)).toBe(true);
+    });
+  });
+
+  describe("approval expiry", () => {
+    const expiringPolicy = (timeout_seconds: number): Policy => ({
+      rules: [
+        {
+          if: { amount_gte: 1 },
+          then: { approval: { via: "callback", timeout_seconds } },
+        },
+      ],
+      default: { approve: true },
+    });
+
+    it("sets expires_at on the staged intent based on the policy's timeout_seconds", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const pay = blacktea({
+        source: rail,
+        policy: expiringPolicy(60),
+        history,
+        audit: () => {},
+      });
+
+      const before = Date.now();
+      const result = await pay.stage(baseInput);
+      const after = Date.now();
+      if (result.outcome !== "approval_required") throw new Error("expected approval_required");
+
+      const expiresAtMs = Date.parse(result.staged.expires_at);
+      expect(Number.isFinite(expiresAtMs)).toBe(true);
+      // 60s in the future, with a small slack window for clock drift / test runtime.
+      expect(expiresAtMs).toBeGreaterThanOrEqual(before + 60_000 - 50);
+      expect(expiresAtMs).toBeLessThanOrEqual(after + 60_000 + 50);
+    });
+
+    it("throws ApprovalTimeoutError when complete(approve) fires after expires_at", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const audit = collectingAudit();
+      const pay = blacktea({
+        source: rail,
+        policy: expiringPolicy(60),
+        history,
+        audit: audit.sink,
+      });
+
+      const result = await pay.stage(baseInput);
+      if (result.outcome !== "approval_required") throw new Error("expected approval_required");
+
+      // Force expiry without sleeping: mutate the staged intent into the past.
+      const expired = { ...result.staged, expires_at: "1970-01-01T00:00:00.000Z" };
+
+      await expect(pay.complete(expired, "approve")).rejects.toThrow(ApprovalTimeoutError);
+      // Nothing settled, nothing recorded.
+      expect(rail.settleCalls).toHaveLength(0);
+      expect(history.events).toHaveLength(0);
+
+      const names = audit.events.map((e) => e.event);
+      expect(names).toContain("approval_timed_out");
+      // The expired approve must NOT emit approval_received{approve} or payment_completed.
+      expect(names).not.toContain("payment_completed");
+      const received = audit.events.find((e) => e.event === "approval_received");
+      expect(received).toBeUndefined();
+    });
+
+    it("still rejects an expired stage (late reject is benign, not an error)", async () => {
+      const rail = fakeRail();
+      const history = new FakeHistory();
+      const pay = blacktea({
+        source: rail,
+        policy: expiringPolicy(60),
+        history,
+        audit: () => {},
+      });
+
+      const result = await pay.stage(baseInput);
+      if (result.outcome !== "approval_required") throw new Error("expected approval_required");
+      const expired = { ...result.staged, expires_at: "1970-01-01T00:00:00.000Z" };
+
+      const intent = await pay.complete(expired, "reject");
+      expect(intent.status).toBe("denied");
+      expect(rail.settleCalls).toHaveLength(0);
     });
   });
 });

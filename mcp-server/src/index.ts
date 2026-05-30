@@ -208,7 +208,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "audit_query",
       description:
-        "Read recent payment events from the audit log. Useful when you need to explain what was paid for, how much was spent today, or why a recent payment behaved a certain way.",
+        "Read recent completed payments from the history file. Useful when you need to explain what was paid for or how much was spent today. Held, denied, and expired payments are NOT in this file; they live in the agent process's audit sink.",
       inputSchema: {
         type: "object",
         properties: {
