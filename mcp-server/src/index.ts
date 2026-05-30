@@ -43,12 +43,8 @@ import {
 } from "@nmrtn/blacktea";
 import { mockWallet, x402Wallet } from "@nmrtn/blacktea/adapters";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 const PACKAGE_NAME = "@nmrtn/blacktea-mcp";
-
-// How long a staged (awaiting-approval) payment stays valid before it
-// auto-expires. The human has this long to approve in the chat.
-const STAGED_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 // ---------- config from env ----------
 
@@ -105,14 +101,19 @@ const pay = blacktea({
 });
 
 // Payments the policy held for human approval, keyed by intent_id. Lives in
-// memory for the life of this server process (one MCP session). Each entry
-// expires after STAGED_TTL_MS so a forgotten approval can't settle hours later.
-const stagedIntents = new Map<string, { staged: StagedIntent; expiresAt: number }>();
+// memory for the life of this server process (one MCP session). Each staged
+// intent carries its own `expires_at` (set by the SDK from the policy's
+// `timeout_seconds`); we prune entries whose window has elapsed so a
+// forgotten approval can't sit here forever.
+const stagedIntents = new Map<string, StagedIntent>();
 
 function pruneExpiredStaged(): void {
   const now = Date.now();
-  for (const [id, entry] of stagedIntents) {
-    if (now > entry.expiresAt) stagedIntents.delete(id);
+  for (const [id, staged] of stagedIntents) {
+    const expiresAtMs = Date.parse(staged.expires_at);
+    if (Number.isFinite(expiresAtMs) && now > expiresAtMs) {
+      stagedIntents.delete(id);
+    }
   }
 }
 
@@ -272,7 +273,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       // approval_required - hold it and tell the agent to ask the human.
       const { staged } = result;
       pruneExpiredStaged();
-      stagedIntents.set(staged.intent_id, { staged, expiresAt: Date.now() + STAGED_TTL_MS });
+      stagedIntents.set(staged.intent_id, staged);
       return pending({
         status: "approval_required",
         intent_id: staged.intent_id,
@@ -305,13 +306,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     try {
-      const intent = await pay.complete(entry.staged, "approve");
+      const intent = await pay.complete(entry, "approve");
       stagedIntents.delete(intentId);
       return ok({ receipt: intent.receipt, data: intent.data });
     } catch (caught) {
-      // Settle failed (rail down, signature error). The staged intent is
-      // consumed either way - a half-failed settle shouldn't be retryable
-      // by replaying the same approval.
+      // Settle failed (rail down, signature error, expired approval). The
+      // staged intent is consumed either way: a half-failed settle or a
+      // late approval shouldn't be retryable by replaying.
       stagedIntents.delete(intentId);
       if (isBlackteaError(caught)) {
         return err(caught.code, caught.message);
@@ -334,7 +335,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       );
     }
 
-    await pay.complete(entry.staged, "reject");
+    await pay.complete(entry, "reject");
     stagedIntents.delete(intentId);
     return ok({
       status: "rejected",
