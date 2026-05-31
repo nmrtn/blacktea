@@ -43,7 +43,7 @@ import {
 } from "@nmrtn/blacktea";
 import { mockWallet, x402Wallet } from "@nmrtn/blacktea/adapters";
 
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 const PACKAGE_NAME = "@nmrtn/blacktea-mcp";
 
 // ---------- config from env ----------
