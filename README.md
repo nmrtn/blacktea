@@ -252,16 +252,20 @@ More examples in [docs/policy-cookbook.md](docs/policy-cookbook.md).
 |---|---|---|
 | **x402** (USDC on Base) | Shipped | `@nmrtn/blacktea/adapters` |
 | **mock** (no network) | Shipped | `@nmrtn/blacktea/adapters` |
-| AP2 | Planned, design open | n/a |
+| Stripe Issuing (cards) | [Design sketch](docs/rail-adapters.md#sketch-1-stripe-issuing-cards) | `@nmrtn/blacktea-stripe-issuing` (planned) |
+| Tink PSD2 (SEPA Instant) | [Design sketch](docs/rail-adapters.md#sketch-2-tink-psd2-sepa-credit-transfer-instant) | `@nmrtn/blacktea-tink` (planned) |
+| AP2 | [Design sketch, awaiting spec](docs/rail-adapters.md#sketch-3-ap2-agent-payments-protocol) | `@nmrtn/blacktea-ap2` (planned) |
 | ACP | Planned, design open | n/a |
-| SEPA push | Planned, design open | n/a |
-| ACH | Planned, design open | n/a |
+| ACH (Plaid) | Planned, design open | n/a |
 | Cards (Stripe Issuing auth-webhook) | Planned, deferred to v1.5+ | n/a |
 
 The `RailAdapter` interface is two methods (`preflight`, `settle`) plus
 `name` and `supports`. Adding a rail is a separate adapter package; the
-core never changes. See `src/rails/x402.ts` for the reference shape and
-`src/rails/mock.ts` for the no-network version.
+core never changes. See `src/rails/x402.ts` for the reference shape,
+`src/rails/mock.ts` for the no-network version, and
+[`docs/rail-adapters.md`](docs/rail-adapters.md) for design sketches of
+the next three rails on the roadmap (Stripe Issuing for cards, Tink PSD2
+for SEPA Instant, AP2).
 
 If you maintain or care about any of the planned rails: open an issue
 describing the shape (request-response? push? webhook-driven?) and what
