@@ -253,7 +253,7 @@ More examples in [docs/policy-cookbook.md](docs/policy-cookbook.md).
 | **x402** (USDC on Base) | Shipped | `@nmrtn/blacktea/adapters` |
 | **mock** (no network) | Shipped | `@nmrtn/blacktea/adapters` |
 | Stripe Issuing (cards) | [Design sketch](docs/rail-adapters.md#sketch-1-stripe-issuing-cards) | `@nmrtn/blacktea-stripe-issuing` (planned) |
-| Tink PSD2 (SEPA Instant) | [Design sketch](docs/rail-adapters.md#sketch-2-tink-psd2-sepa-credit-transfer-instant) | `@nmrtn/blacktea-tink` (planned) |
+| PSD2 (SEPA Instant) | [Design sketch](docs/rail-adapters.md#sketch-2-psd2-sepa-credit-transfer-instant) | `@nmrtn/blacktea-tink`, `@nmrtn/blacktea-bridge` (planned) |
 | AP2 | [Design sketch, awaiting spec](docs/rail-adapters.md#sketch-3-ap2-agent-payments-protocol) | `@nmrtn/blacktea-ap2` (planned) |
 | ACP | Planned, design open | n/a |
 | ACH (Plaid) | Planned, design open | n/a |

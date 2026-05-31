@@ -26,7 +26,7 @@ Key idea: **preflight learns the price; settle moves the money.** For request-re
 | **x402** (USDC on Base) | Shipped | `@nmrtn/blacktea/adapters` | (production code) |
 | **mock** (no network) | Shipped | `@nmrtn/blacktea/adapters` | (production code) |
 | **Stripe Issuing** (cards) | Sketch | `@nmrtn/blacktea-stripe-issuing` (planned) | below |
-| **Tink PSD2** (SEPA Instant) | Sketch | `@nmrtn/blacktea-tink` (planned) | below |
+| **PSD2** (SEPA Instant) | Sketch | `@nmrtn/blacktea-tink`, `@nmrtn/blacktea-bridge` (planned) | below |
 | **AP2** (Google + Coinbase) | Sketch, awaiting spec | `@nmrtn/blacktea-ap2` (planned) | below |
 | **ACH** via Plaid | Open | n/a | n/a |
 | **ACP** | Open | n/a | n/a |
@@ -153,9 +153,11 @@ export function stripeIssuingWallet(cfg: StripeIssuingConfig): RailAdapter {
 - Chargebacks exist. A "completed" PaymentIntent on the cards rail is reversible for up to ~120 days. Future `PaymentIntentStatus` will likely need a "revoked" or "charged_back" terminal state.
 - Once the agent has the card credentials, the chain-of-custody is no longer blacktea's. Combine with a browser-use tool that runs in an isolated context if you care about credential exfiltration.
 
-## Sketch 2: Tink PSD2 (SEPA Credit Transfer Instant)
+## Sketch 2: PSD2 (SEPA Credit Transfer Instant)
 
-**Model: PSD2 Payment Initiation Service.** The user authorizes a Payment Initiation Service provider (Tink in this sketch; TrueLayer, Salt Edge, and others have the same shape) once via Strong Customer Authentication. The PIS provider holds the OAuth token. blacktea calls the PIS provider's API to push SEPA Instant transfers from the user's account to a recipient IBAN. The agent never sees the user's bank credentials.
+**Model: PSD2 Payment Initiation Service.** The user authorizes a Payment Initiation Service provider once via Strong Customer Authentication. The PIS provider holds the OAuth token. blacktea calls the PIS provider's API to push SEPA Instant transfers from the user's account to a recipient IBAN. The agent never sees the user's bank credentials.
+
+There are several licensed PIS providers with near-identical contracts: **Tink** (Visa-owned, broad European reach), **Bridge** (French, originally Bankin', deep French bank coverage, now part of BPCE), **TrueLayer** (UK + EU), **Salt Edge** (EU). The code below uses Tink as the concrete reference because its docs are public; a Bridge or TrueLayer adapter is a near drop-in replacement with different base URLs and slightly different consent-flow plumbing. Treat the sketch as the PSD2 *shape*; pick the provider that matches your geography and license setup.
 
 This is the cleanest mapping to blacktea's existing model: same preflight/settle split, same buyer-side decision layer, different rail underneath.
 
@@ -282,6 +284,14 @@ export function tinkSepaWallet(cfg: TinkPisConfig): RailAdapter {
 }
 ```
 
+**Sibling providers (same shape, different endpoints):**
+
+- **Bridge** (`api.bridgeapi.io`): consent flow is end-user-token-based; payment initiation under `/v2/payments`. Strong on French bank coverage, including the BPCE group, Société Générale, BNP Paribas, Crédit Agricole, and the neobanks. The Bridge adapter would look identical to the sketch above with the auth and endpoint blocks swapped.
+- **TrueLayer** (`api.truelayer.com`): payment initiation under `/v3/payments`; auth is a signed JWT bound to a JWKS.
+- **Salt Edge** (`www.saltedge.com/api`): explicit `customer_id` + `connection_id` model.
+
+All four implement the same PSD2 PIS shape; they differ in geography, bank coverage, fee model, and consent-flow specifics. For a French-focused agent, Bridge is the obvious first call. For broad EU + UK, Tink or TrueLayer.
+
 **Honest limits with SEPA Instant:**
 - Irrevocable once accepted. blacktea's "rejected" state must fire BEFORE settle; there is no chargeback path.
 - ~10 second settlement window. Fits blacktea's current synchronous `pay()` model.
@@ -380,4 +390,4 @@ The interface is small. The contract is well-defined. If you want SEPA, AP2, ACH
 2. Reference this doc as the design starting point.
 3. Ship the adapter as a sibling npm package (like `@nmrtn/blacktea-mcp`) or contribute to `src/rails/` if it's broadly useful.
 
-Cross-pollination with the rail-providing teams is welcome and active. If you work at Stripe (Issuing), Coinbase (x402), the AP2 working group, or any PSD2 PIS provider, we are happy to refine these sketches against your actual API.
+Cross-pollination with the rail-providing teams is welcome and active. If you work at Stripe (Issuing), Coinbase (x402), the AP2 working group, or a PSD2 PIS provider (Bridge, Tink, TrueLayer, Salt Edge), we are happy to refine these sketches against your actual API.
