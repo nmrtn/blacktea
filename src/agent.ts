@@ -260,8 +260,16 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     inFlight.set(idempotencyKey, promise);
     // Clean up on resolve AND reject so a failed settle leaves the slot
     // reclaimable for a subsequent retry, and so concurrent awaiters all
-    // see the same failure rather than hanging on a stale Promise.
-    promise.finally(() => inFlight.delete(idempotencyKey));
+    // see the same failure rather than hanging on a stale Promise. Using
+    // .then(cleanup, cleanup) (not .finally) so the cleanup chain doesn't
+    // surface as a floating unhandled rejection when the rail throws:
+    // .finally would propagate the rejection on a Promise nobody awaits;
+    // .then with both callbacks returning void produces a resolved Promise
+    // and the caller's await on `promise` remains the only rejection sink.
+    const cleanup = () => {
+      inFlight.delete(idempotencyKey);
+    };
+    promise.then(cleanup, cleanup);
     return promise;
   }
 

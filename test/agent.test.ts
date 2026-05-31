@@ -977,6 +977,51 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       expect(history.events).toHaveLength(1);
     });
 
+    it("propagates a rejection from settle to BOTH concurrent callers without unhandled rejections", async () => {
+      // A rail whose settle() rejects after a tick. Both callers should
+      // receive the same rejection. The cleanup chain must not surface as
+      // a floating unhandled rejection (which is what an earlier .finally
+      // implementation did and CI caught).
+      const settleCalls: PayInput[] = [];
+      const failingRail: RailAdapter = {
+        name: "failing",
+        supports: () => true,
+        preflight: async () => ({
+          amount: 4,
+          currency: "USDC",
+          recipient_wallet: "0xabc123",
+          network: "base-sepolia",
+        }),
+        settle: async (input: PayInput): Promise<SettleResult> => {
+          settleCalls.push(input);
+          await new Promise((resolve) => setImmediate(resolve));
+          throw new Error("simulated network failure");
+        },
+      };
+      const policy: Policy = { rules: [], default: { approve: true } };
+      const pay = blacktea({
+        source: failingRail,
+        policy,
+        history: new FakeHistory(),
+        audit: () => {},
+      });
+
+      const p1 = pay(baseInput, { idempotency_key: "shared_failure_key" });
+      const p2 = pay(baseInput, { idempotency_key: "shared_failure_key" });
+
+      const r1 = await p1.catch((e) => e);
+      const r2 = await p2.catch((e) => e);
+
+      // Both got an error - same shape, same message tail.
+      expect(r1).toBeInstanceOf(Error);
+      expect(r2).toBeInstanceOf(Error);
+      expect(r1.message).toMatch(/simulated network failure/);
+      expect(r2.message).toMatch(/simulated network failure/);
+      // Settle fired exactly once even though it failed - the second
+      // caller awaited the first's Promise and got the same rejection.
+      expect(settleCalls).toHaveLength(1);
+    });
+
     it("does not serialize calls with DIFFERENT idempotency keys", async () => {
       // Sanity check: the guard must not over-serialize. Independent payments
       // with different keys settle independently.
