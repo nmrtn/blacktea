@@ -304,16 +304,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         `No payment is awaiting approval with intent_id "${intentId}". It may have expired, already been resolved, or never existed.`,
       );
     }
+    // Claim BEFORE awaiting. JS's synchronous get-check-delete sequence
+    // makes this atomic: a second concurrent approve_payment call lands its
+    // get() after this delete and sees not_found instead of racing through
+    // a second pay.complete(). Same goes for the catch path - the intent
+    // is consumed either way (a half-failed settle shouldn't be retryable
+    // by replaying the same approval).
+    stagedIntents.delete(intentId);
 
     try {
       const intent = await pay.complete(entry, "approve");
-      stagedIntents.delete(intentId);
       return ok({ receipt: intent.receipt, data: intent.data });
     } catch (caught) {
-      // Settle failed (rail down, signature error, expired approval). The
-      // staged intent is consumed either way: a half-failed settle or a
-      // late approval shouldn't be retryable by replaying.
-      stagedIntents.delete(intentId);
       if (isBlackteaError(caught)) {
         return err(caught.code, caught.message);
       }
@@ -335,8 +337,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       );
     }
 
-    await pay.complete(entry, "reject");
+    // Claim before await, same reason as approve_payment: prevents a
+    // concurrent reject from awaiting a second pay.complete on a consumed
+    // intent.
     stagedIntents.delete(intentId);
+    await pay.complete(entry, "reject");
     return ok({
       status: "rejected",
       intent_id: intentId,

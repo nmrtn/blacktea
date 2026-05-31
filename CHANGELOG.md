@@ -8,6 +8,45 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
+## `@nmrtn/blacktea` v0.1.4 - 2026-05-30
+
+Closes the last open security item from the 2026-05-29 review (P0-2).
+
+### Fixed
+
+- **Concurrent settlements with the same idempotency key now serialize to
+  one rail.settle.** Previously the idempotency cache was checked before
+  settle and written after, so two concurrent `pay()` calls (or two
+  concurrent `pay.complete(staged, "approve")` calls in the MCP path) both
+  passed the empty-cache check and both proceeded to settle. For a
+  spending-control product, that means an over-spend under retries: two
+  on-chain payments where one was intended. The fix is an in-flight Promise
+  map keyed by `idempotencyKey`: the first caller registers its Promise;
+  later concurrent callers await it and resolve to the same PaymentIntent.
+  The map cleans up on resolve and reject so failed settles do not leak
+  the slot. New audit event: `idempotency_concurrent_hit`. Tests cover
+  shared-key, complete(approve) shared-key, and (sanity) different-key
+  cases.
+
+---
+
+## `@nmrtn/blacktea-mcp` v0.1.3 - 2026-05-30
+
+### Fixed
+
+- **`approve_payment` and `reject_payment` claim before awaiting.** Moved
+  `stagedIntents.delete(intentId)` ahead of the `await pay.complete(...)`
+  call. JS's synchronous get-check-delete sequence makes this atomic, so a
+  second concurrent `approve_payment` for the same `intent_id` lands its
+  `get()` after the delete and sees `not_found` instead of racing through a
+  second settle. Pairs with the SDK 0.1.4 in-flight Promise guard.
+
+### Changed
+
+- Dependency floor bumped to `@nmrtn/blacktea@^0.1.4`.
+
+---
+
 ## `@nmrtn/blacktea` v0.1.3 - 2026-05-29
 
 Pre-launch hardening pass.

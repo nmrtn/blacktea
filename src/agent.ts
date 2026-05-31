@@ -113,6 +113,18 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   const dryRun = options.dry_run ?? false;
   const onApprovalNeeded = options.onApprovalNeeded;
 
+  // ---------- in-flight serialization (concurrent-settle guard) ----------
+  //
+  // The idempotency cache deduplicates SEQUENTIAL retries with the same key.
+  // This map deduplicates CONCURRENT retries: two callers racing through
+  // the same idempotency key both miss the cache (it has not been written
+  // yet), so without this guard both would settle on the rail. Bad for a
+  // spending-control product. With the guard, the first caller registers a
+  // Promise; later concurrent callers await it and return the same
+  // PaymentIntent. The map cleans up on resolve OR reject so failures
+  // propagate to every awaiter and the slot is reclaimable on retry.
+  const inFlight = new Map<string, Promise<PaymentIntent>>();
+
   // ---------- shared pipeline: prepare ----------
 
   // The result of running everything up to and including policy evaluation:
@@ -219,7 +231,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
 
   // ---------- shared pipeline: settle + record ----------
 
-  async function settleAndRecord(args: {
+  type SettleArgs = {
     intentId: string;
     idempotencyKey: string;
     rail: RailAdapter;
@@ -228,7 +240,32 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     ruleFired: string;
     input: PayInput;
     opts: PayOptions;
-  }): Promise<PaymentIntent> {
+  };
+
+  async function settleAndRecord(args: SettleArgs): Promise<PaymentIntent> {
+    const { idempotencyKey } = args;
+    // Concurrent-settle guard. The sequential retry case is handled by the
+    // cache check up in prepare(); this catches the case where two callers
+    // race through the same key, both find an empty cache, and both reach
+    // settleAndRecord. The first caller's Promise is registered; later
+    // concurrent callers await it and resolve to the same PaymentIntent.
+    const existing = inFlight.get(idempotencyKey);
+    if (existing) {
+      emit(audit, "idempotency_concurrent_hit", args.intentId, {
+        idempotency_key: idempotencyKey,
+      });
+      return existing;
+    }
+    const promise = doSettleAndRecord(args);
+    inFlight.set(idempotencyKey, promise);
+    // Clean up on resolve AND reject so a failed settle leaves the slot
+    // reclaimable for a subsequent retry, and so concurrent awaiters all
+    // see the same failure rather than hanging on a stale Promise.
+    promise.finally(() => inFlight.delete(idempotencyKey));
+    return promise;
+  }
+
+  async function doSettleAndRecord(args: SettleArgs): Promise<PaymentIntent> {
     const { intentId, idempotencyKey, rail, requirement, policyInput, ruleFired, input, opts } =
       args;
 

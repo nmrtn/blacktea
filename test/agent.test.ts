@@ -868,4 +868,139 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       expect(rail.settleCalls).toHaveLength(0);
     });
   });
+
+  describe("concurrent settlement guard (P0-2)", () => {
+    // A rail whose settle() awaits a controllable promise. Lets the test
+    // hold two pay() calls "in flight" simultaneously so we can prove the
+    // in-flight map serializes them into one rail.settle invocation.
+    function slowRail(): RailAdapter & {
+      settleCalls: PayInput[];
+      release: () => void;
+    } {
+      const settleCalls: PayInput[] = [];
+      let resolveSettle: () => void = () => {};
+      const settleGate = new Promise<void>((resolve) => {
+        resolveSettle = resolve;
+      });
+
+      const rail: RailAdapter & {
+        settleCalls: PayInput[];
+        release: () => void;
+      } = {
+        name: "slow",
+        supports: () => true,
+        preflight: async () => ({
+          amount: 4,
+          currency: "USDC",
+          recipient_wallet: "0xabc123",
+          network: "base-sepolia",
+        }),
+        settle: async (input: PayInput): Promise<SettleResult> => {
+          settleCalls.push(input);
+          await settleGate;
+          return {
+            receipt: {
+              id: "rail_receipt_id",
+              amount: 4,
+              currency: "USDC",
+              rail: "slow",
+              rail_charge_id: "ch_test_123",
+              recipient_url: input.url,
+              recipient_wallet: "0xabc123",
+              paid_at: new Date().toISOString(),
+            },
+            data: { fake: "api response" },
+          };
+        },
+        settleCalls,
+        release: () => resolveSettle(),
+      };
+      return rail;
+    }
+
+    it("serializes concurrent pay() with the same idempotency_key into one settle", async () => {
+      const rail = slowRail();
+      const history = new FakeHistory();
+      const policy: Policy = { rules: [], default: { approve: true } };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      // Fire two concurrent calls sharing one idempotency_key. Both must
+      // reach settleAndRecord before either resolves; only one settle.
+      const p1 = pay(baseInput, { idempotency_key: "shared_key_alpha" });
+      const p2 = pay(baseInput, { idempotency_key: "shared_key_alpha" });
+
+      // Let both calls reach their settleAndRecord await point.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // The guard kicked in: only one rail.settle invocation pending.
+      expect(rail.settleCalls).toHaveLength(1);
+
+      rail.release();
+      const [i1, i2] = await Promise.all([p1, p2]);
+
+      expect(i1.status).toBe("completed");
+      expect(i2.status).toBe("completed");
+      // Second caller awaited the first's Promise: same intent object.
+      expect(i1.id).toBe(i2.id);
+      // Settle never fired a second time, history wrote exactly once.
+      expect(rail.settleCalls).toHaveLength(1);
+      expect(history.events).toHaveLength(1);
+    });
+
+    it("serializes concurrent complete(approve) for the same staged intent", async () => {
+      const rail = slowRail();
+      const history = new FakeHistory();
+      const policy: Policy = {
+        rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
+        default: { approve: true },
+      };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      const staged = await pay.stage(baseInput);
+      if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
+      // Both completes share staged._idempotencyKey by construction.
+      const c1 = pay.complete(staged.staged, "approve");
+      const c2 = pay.complete(staged.staged, "approve");
+
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(rail.settleCalls).toHaveLength(1);
+
+      rail.release();
+      const [i1, i2] = await Promise.all([c1, c2]);
+
+      expect(i1.status).toBe("completed");
+      expect(i2.status).toBe("completed");
+      expect(i1.id).toBe(i2.id);
+      expect(history.events).toHaveLength(1);
+    });
+
+    it("does not serialize calls with DIFFERENT idempotency keys", async () => {
+      // Sanity check: the guard must not over-serialize. Independent payments
+      // with different keys settle independently.
+      const rail = slowRail();
+      const history = new FakeHistory();
+      const policy: Policy = { rules: [], default: { approve: true } };
+      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+      const p1 = pay(baseInput, { idempotency_key: "key_one" });
+      const p2 = pay(baseInput, { idempotency_key: "key_two" });
+
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Both settles fired - no false sharing.
+      expect(rail.settleCalls).toHaveLength(2);
+
+      rail.release();
+      const [i1, i2] = await Promise.all([p1, p2]);
+      expect(i1.status).toBe("completed");
+      expect(i2.status).toBe("completed");
+      // Different intents - they really did run independently.
+      expect(i1.id).not.toBe(i2.id);
+      expect(history.events).toHaveLength(2);
+    });
+  });
 });
