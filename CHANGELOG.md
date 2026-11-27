@@ -8,6 +8,88 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
+## `@nmrtn/blacktea` v0.1.5 - 2026-11-27
+
+Approval receipts, the `trigger` input, and a settle-time quote check for x402.
+
+### Security
+
+- **x402 quote check at settle.** Before 0.1.5 an x402 server could change
+  its quote between preflight and settle and be paid the new amount or payee.
+  The rail now pays only the approved quote and refuses a settle-time quote
+  that is higher or names a different payee, network or asset, with
+  `QuoteChangedError` (nothing is signed).
+- **x402 pays only on the configured chain and token.** The network and
+  token contract in a server's quote are what gets signed, and nothing
+  compared them to the wallet's configuration: a wallet set up for
+  `base-sepolia` could be quoted, and would sign, a payment on `base`, or in
+  another token. The rail now refuses, at preflight and again at settle, any
+  quote that is not on the configured `chain` and in the expected token: USDC
+  for `base` and `base-sepolia`, or the new `asset` option on `x402Wallet`.
+  Any other chain now needs `asset` set. A 402 that lists several options is
+  matched against all of them, not only the first.
+- **Payments above 0.10 USDC no longer fail at settle.** No cap was passed to
+  `x402-fetch`, so it refused anything above its default. The cap is now the
+  approved amount.
+
+### Added
+
+- **Approval receipts.** Every payment that needs a human gets an
+  `ApprovalRecord`, appended as one snapshot per state change to
+  `./.blacktea/approvals.jsonl` (`./.blacktea/approvals-dryrun.jsonl` under
+  `dry_run`) and mirrored to the audit sink as `approval_record`. A receipt
+  ends in `settled` whenever the rail has paid, even if a later bookkeeping
+  step fails; `failed` means the rail reported a failure. On x402 a payment
+  that was already signed and sent may still be redeemed by the server even
+  when the receipt says `failed` (for example when the server answers with
+  an error after taking the payment). If the receipt for `staged` or
+  `approved` cannot be written, the payment is blocked. New
+  `approvals` option on the factory and `ApprovalStore` interface.
+- **`trigger` input** on `pay()` and `pay.stage()`: what the agent says
+  prompted the payment (1 to 500 characters). Recorded on the receipt and
+  shown to the human. Reported by the agent, not proof. Rules cannot match
+  on it.
+- **CLI:** `blacktea pay --trigger`, `blacktea approvals show` (`--last`,
+  `--json`, `--store`), and new exit codes 9 (`quote_changed`) and 10
+  (`approval_invalid`).
+- New errors: `ApprovalInvalidError` (`params_changed`,
+  `unknown_or_consumed`) and `QuoteChangedError`.
+
+### Changed
+
+- `ApprovalRecord` shape differs from the unpublished draft on `main`.
+- `pay.complete()` now refuses a replayed or altered staged intent with
+  `ApprovalInvalidError`. It settles only from a private copy the factory
+  took at `stage()` time; the `StagedIntent` is a handle. An altered object
+  gives `params_changed`; a replayed, unknown, or long-expired one gives
+  `unknown_or_consumed`.
+- Expiry of a held payment is checked against the window recorded when it
+  was staged, not against `staged.expires_at`. Held payments more than one
+  hour past their expiry are dropped from memory the next time `stage()`
+  runs.
+- `approval_requested` is no longer emitted when a `callback` approval is
+  required but no `onApprovalNeeded` was given (the `ValidationError` is
+  thrown first).
+- `pay()` settles from private copies of the input taken when the payment
+  is held for approval. Changing the request object while the human
+  decides (from `onApprovalNeeded`, for example) no longer changes what is
+  paid. Request bodies are held in their JSON form, on both `pay()` and
+  `pay.stage()`.
+- An idempotency key is checked again just before the rail is called. Two
+  payments with the same key that both wait for approval now settle once;
+  the second returns the first one's receipt.
+- `pay.complete()` throws `ValidationError` for a decision other than
+  `"approve"` or `"reject"`, and the held payment stays usable.
+- The x402 receipt records the approved payee casing when the server
+  answers with the same address in a different letter case.
+- An `onApprovalNeeded` that throws now ends the receipt in `denied` with
+  `decision_reason: "approval_channel_error"` and rethrows its error. A
+  result that is neither approve nor deny is a denial with that reason
+  (`PolicyDeniedError`).
+- `x402-fetch` is pinned to 1.2.0.
+
+---
+
 ## `@nmrtn/blacktea` v0.1.4 - 2026-05-30
 
 Closes the last open security item from the 2026-05-29 review (P0-2).

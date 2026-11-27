@@ -21,7 +21,9 @@ vi.mock("x402-fetch", () => ({
 
 // Now import after the mock is registered.
 const { x402Wallet } = await import("../../src/rails/x402.js");
-const { NetworkError, RailUnavailableError } = await import("../../src/errors.js");
+const { NetworkError, QuoteChangedError, RailUnavailableError } = await import(
+  "../../src/errors.js"
+);
 
 const TEST_PK = "0x0000000000000000000000000000000000000000000000000000000000000001";
 
@@ -286,6 +288,172 @@ describe("x402Wallet", () => {
 
       const result = await rail.settle({ url: "https://x.com/paid", intent: "t" }, requirement, {});
       expect(result.data).toBeUndefined();
+    });
+  });
+
+  describe("settle pays only the approved quote", () => {
+    type Selector = (reqs: Array<Record<string, unknown>>) => Record<string, unknown>;
+    const input = { url: "https://x.com/paid", intent: "t" };
+    const approved = {
+      scheme: "exact",
+      network: "base-sepolia",
+      maxAmountRequired: "10000",
+      payTo: "0xRECIPIENT",
+      asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    };
+
+    function okResponse(): Response {
+      return new Response("{}", {
+        status: 200,
+        headers: { "x-payment-response": makeSettlementHeader("0xabc") },
+      });
+    }
+
+    // Preflight against a 402 quote, settle with a mocked x402-fetch, and
+    // return the arguments settle() passed to wrapFetchWithPayment.
+    async function settleAndCapture(
+      overrides: Record<string, unknown> = {},
+    ): Promise<[unknown, unknown, unknown, Selector]> {
+      vi.mocked(fetch).mockResolvedValue(make402Response(overrides));
+      mockWrapFetchWithPayment.mockReturnValue(vi.fn().mockResolvedValue(okResponse()));
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      const requirement = await rail.preflight(input);
+      await rail.settle(input, requirement, {});
+      return mockWrapFetchWithPayment.mock.calls[0] as [unknown, unknown, unknown, Selector];
+    }
+
+    it("passes the approved amount as maxValue in base units", async () => {
+      const [, , maxValue] = await settleAndCapture();
+      expect(maxValue).toBe(10000n);
+    });
+
+    it("settles a payment above 0.10 USDC", async () => {
+      const [, , maxValue] = await settleAndCapture({ maxAmountRequired: "4000000" });
+      expect(maxValue).toBe(4000000n);
+    });
+
+    it("derives maxValue from requirement.amount when there is no raw quote", async () => {
+      mockWrapFetchWithPayment.mockReturnValue(vi.fn().mockResolvedValue(okResponse()));
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      await rail.settle(input, { amount: 0.01, currency: "USDC", recipient_wallet: "0xR" }, {});
+      expect(mockWrapFetchWithPayment.mock.calls[0]?.[2]).toBe(10000n);
+    });
+
+    it("selector accepts an identical quote", async () => {
+      const [, , , select] = await settleAndCapture();
+      expect(select([approved])).toEqual(approved);
+    });
+
+    it("selector accepts a payee that differs only by letter case", async () => {
+      const [, , , select] = await settleAndCapture();
+      expect(select([{ ...approved, payTo: "0xrecipient" }]).payTo).toBe("0xrecipient");
+    });
+
+    it("selector picks a later matching entry", async () => {
+      const [, , , select] = await settleAndCapture();
+      expect(select([{ ...approved, payTo: "0xEVIL" }, approved])).toEqual(approved);
+    });
+
+    it.each([
+      ["higher amount", { maxAmountRequired: "10001" }],
+      ["different payee", { payTo: "0xEVIL" }],
+      ["different network", { network: "base" }],
+      ["different asset", { asset: "0xOTHER" }],
+    ])("selector refuses a %s", async (_n, change) => {
+      const [, , , select] = await settleAndCapture();
+      expect(() => select([{ ...approved, ...change }])).toThrow(QuoteChangedError);
+    });
+
+    it("selector without a raw quote still holds payee, amount, chain and token", async () => {
+      mockWrapFetchWithPayment.mockReturnValue(vi.fn().mockResolvedValue(okResponse()));
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      await rail.settle(
+        input,
+        { amount: 0.01, currency: "USDC", recipient_wallet: "0xRECIPIENT" },
+        {},
+      );
+      const select = mockWrapFetchWithPayment.mock.calls[0]?.[3] as Selector;
+      expect(select([approved])).toEqual(approved);
+      for (const change of [
+        { payTo: "0xEVIL" },
+        { maxAmountRequired: "10001" },
+        { network: "base" },
+        { asset: "0xOTHER" },
+        { asset: undefined },
+      ]) {
+        expect(() => select([{ ...approved, ...change }])).toThrow(QuoteChangedError);
+      }
+    });
+
+    it("selector accepts a token address that differs only by letter case", async () => {
+      const [, , , select] = await settleAndCapture();
+      const lower = { ...approved, asset: approved.asset.toLowerCase() };
+      expect(select([lower])).toEqual(lower);
+    });
+
+    it("surfaces QuoteChangedError from settle unchanged", async () => {
+      mockWrapFetchWithPayment.mockReturnValue(
+        vi.fn().mockRejectedValue(new QuoteChangedError("x402", "x")),
+      );
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      await expect(
+        rail.settle(input, { amount: 0.01, currency: "USDC", recipient_wallet: "0xR" }, {}),
+      ).rejects.toBeInstanceOf(QuoteChangedError);
+    });
+
+    it("records the lower amount when the settle-time quote is cheaper", async () => {
+      vi.mocked(fetch).mockResolvedValue(make402Response());
+      mockWrapFetchWithPayment.mockImplementation(
+        (_fetch: unknown, _signer: unknown, _max: unknown, select: Selector) =>
+          vi.fn(async () => {
+            select([{ ...approved, payTo: "0xrecipient", maxAmountRequired: "5000" }]);
+            return okResponse();
+          }),
+      );
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      const requirement = await rail.preflight(input);
+
+      const { receipt } = await rail.settle(input, requirement, {});
+      expect(receipt.amount).toBe(0.005);
+      // A payee accepted despite a casing difference is recorded with the
+      // approved casing, which is what history and policy lookups use.
+      expect(receipt.recipient_wallet).toBe("0xRECIPIENT");
+    });
+  });
+
+  describe("pays only on the configured chain and token", () => {
+    const input = { url: "https://x.com/paid", intent: "t" };
+    const MAINNET_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+
+    // The quote is the same at preflight and at settle, so only a check
+    // against the configuration can catch it.
+    it("refuses at preflight a quote on another network, and signs nothing", async () => {
+      vi.mocked(fetch).mockResolvedValue(make402Response({ network: "base", asset: MAINNET_USDC }));
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      await expect(rail.preflight(input)).rejects.toBeInstanceOf(RailUnavailableError);
+      expect(mockWrapFetchWithPayment).not.toHaveBeenCalled();
+    });
+
+    it("refuses at preflight a quote in another token", async () => {
+      vi.mocked(fetch).mockResolvedValue(make402Response({ asset: "0xOTHERTOKEN" }));
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      await expect(rail.preflight(input)).rejects.toThrow(/no payment option on base-sepolia/);
+    });
+
+    it("refuses a chain it knows no token for, unless asset is configured", async () => {
+      const quote = { network: "polygon", asset: "0xPOLYGONUSDC" };
+      vi.mocked(fetch).mockResolvedValue(make402Response(quote));
+      await expect(
+        x402Wallet({ privateKey: TEST_PK, chain: "polygon" }).preflight(input),
+      ).rejects.toThrow(/Set "asset"/);
+
+      vi.mocked(fetch).mockResolvedValue(make402Response(quote));
+      const req = await x402Wallet({
+        privateKey: TEST_PK,
+        chain: "polygon",
+        asset: "0xpolygonusdc",
+      }).preflight(input);
+      expect(req.network).toBe("polygon");
     });
   });
 });

@@ -271,6 +271,8 @@ The `intent` string is fuzzy by nature. The agent may say `"send funds to John"`
 | `any` | `{ any: [ <condition>, <condition>, ... ] }` |
 | `not` | `{ not: <condition> }` |
 
+The `trigger` field on a payment is recorded on the approval receipt and shown to the human, but rules cannot match on it.
+
 ## Action reference
 
 | Action | Shape | Meaning |

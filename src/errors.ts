@@ -87,6 +87,37 @@ export class ApprovalTimeoutError extends BlackteaError {
 }
 
 /**
+ * Thrown when pay.complete() is given a staged intent whose approval can no
+ * longer be honored: the request changed since it was staged, or the intent
+ * was already resolved (or never staged by this instance).
+ */
+export class ApprovalInvalidError extends BlackteaError {
+  readonly code = "approval_invalid";
+  constructor(
+    public readonly intent_id: string,
+    public readonly reason: "params_changed" | "unknown_or_consumed",
+  ) {
+    super(`Approval for intent ${intent_id} is not valid: ${reason}`);
+    this.name = "ApprovalInvalidError";
+  }
+}
+
+/**
+ * Thrown when the rail's quote at settle time differs from the one the
+ * human approved (for example the payee or amount changed).
+ */
+export class QuoteChangedError extends BlackteaError {
+  readonly code = "quote_changed";
+  constructor(
+    public readonly rail: string,
+    public readonly detail: string,
+  ) {
+    super(`Rail "${rail}" quote changed since approval: ${detail}`);
+    this.name = "QuoteChangedError";
+  }
+}
+
+/**
  * Thrown when the input shape passed to pay() fails validation.
  */
 export class ValidationError extends BlackteaError {
@@ -125,6 +156,8 @@ export function isBlackteaError(err: unknown): err is BlackteaError {
     err instanceof NoEligibleRailError ||
     err instanceof RailUnavailableError ||
     err instanceof ApprovalTimeoutError ||
+    err instanceof ApprovalInvalidError ||
+    err instanceof QuoteChangedError ||
     err instanceof ValidationError ||
     err instanceof NetworkError
   );

@@ -52,7 +52,7 @@ runs lint + typecheck + test + build on both packages on every push and PR.
 
 ## Architecture
 
-Six pieces. Understand all six before changing any of them.
+Seven pieces. Understand all seven before changing any of them.
 
 **1. The factory.** `blacktea(opts)` is the single public entry point. Returns
 a `PayFunction` the agent calls for each payment. The factory wires together
@@ -88,6 +88,14 @@ Swap for Redis or SQLite via the `HistoryStore` interface. Lives in
 deferred to a later release. The current `onStatusChange` callback fires once,
 synchronously, with the terminal intent. See `src/agent.ts`.
 
+**7. Approval store.** Every payment that needs a human gets an
+`ApprovalRecord` (`src/approval-record.ts`), a receipt written as one full
+snapshot per state change. Default store is append-only JSONL at
+`./.blacktea/approvals.jsonl`, behind the `ApprovalStore` interface (swap it
+via the `approvals` option). Each snapshot is mirrored to the audit sink as
+an `approval_record` event. If the `staged` or `approved` snapshot cannot be
+written, the payment is blocked. Lives in `src/approvals/`.
+
 The audit log is a side-channel that records every state transition. Default
 sink prints JSON lines to stdout. Customer overrides via the `audit` option on
 the factory. The CLI and MCP transports both pass a quiet sink because they
@@ -105,6 +113,14 @@ v0.0.x ships two approval channels and no HTTP webhook subsystem:
 
 Webhook delivery (library POSTs out to a URL) is on the roadmap but not yet
 implemented.
+
+## Code style
+
+Keep the code clean, simple and elegant. Do not over-engineer.
+
+- Keep the code DRY and the data model simple.
+- When you're confident about the code, before creating a PR, run `/simplify`
+  and `/security-review`.
 
 ## Things to NOT do
 
@@ -126,6 +142,10 @@ a strong reason and a written argument.
   only.
 - Do not bundle a Slack or email integration into the core package. Optional
   `@nmrtn/blacktea-slack` and similar can ship as separate packages.
+- Do not put request bodies or headers on an approval receipt. The receipt
+  holds a hash of the request, never the request.
+- Do not make `trigger` matchable by policy. It is reported by the agent, so
+  a rule on it would let the agent steer its own approval.
 - Do not log secrets. The audit log captures URL, intent, recipient wallet,
   and amount - never the signing private key. The default audit sink writes
   JSON to stdout, so any future field addition needs to be reviewed against
@@ -162,6 +182,9 @@ src/                  Main library (SDK + CLI)
   cli.ts              CLI entry point
   errors.ts           Typed error classes
   types.ts            Public type definitions
+  approval-record.ts  ApprovalRecord receipt type
+  approvals/          Approval store (file-backed JSONL) and params hash
+  display.ts          Sanitizes agent-supplied text shown to a human
   policy/             Schema, evaluator, loader, decision
   rails/x402.ts       The x402 rail adapter
   history/file-backed.ts

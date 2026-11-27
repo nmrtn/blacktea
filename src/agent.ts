@@ -39,10 +39,16 @@
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
+import type { ApprovalRecord, ApprovalState } from "./approval-record.js";
+import { FileBackedApprovalStore } from "./approvals/file-backed.js";
+import { computeParamsHash } from "./approvals/params-hash.js";
+import { sanitizeForDisplay } from "./display.js";
 import {
+  ApprovalInvalidError,
   ApprovalTimeoutError,
   NoEligibleRailError,
   PolicyDeniedError,
+  QuoteChangedError,
   RailUnavailableError,
   ValidationError,
 } from "./errors.js";
@@ -53,6 +59,8 @@ import { evaluatePolicy } from "./policy/evaluator.js";
 import { loadPolicy } from "./policy/load.js";
 import type { Policy } from "./policy/schema.js";
 import type {
+  ApprovalRequest,
+  ApprovalStore,
   AuditEvent,
   AuditSink,
   HistoryStore,
@@ -77,6 +85,11 @@ export interface BlackteaOptions {
   audit?: AuditSink;
   history?: HistoryStore;
   store?: IdempotencyStore;
+  /**
+   * Where approval receipts go. Default: ./.blacktea/approvals.jsonl
+   * (./.blacktea/approvals-dryrun.jsonl under dry_run).
+   */
+  approvals?: ApprovalStore;
   dry_run?: boolean;
 }
 
@@ -89,12 +102,19 @@ export type PayFunction = ((input: PayInput, opts?: PayOptions) => Promise<Payme
   stage: (input: PayInput, opts?: PayOptions) => Promise<StageResult>;
   /**
    * Settle (or deny) a payment that stage() held for approval. Pass the
-   * StagedIntent it returned and the human's decision.
+   * StagedIntent it returned and the human's decision. Single use: a
+   * second call, a staged intent from another factory, or one altered
+   * since staging throws ApprovalInvalidError without calling the rail.
    */
   complete: (staged: StagedIntent, decision: "approve" | "reject") => Promise<PaymentIntent>;
 };
 
 const DEFAULT_IDEMPOTENCY_TTL_SECONDS = 24 * 3600;
+
+// How long after its expiry a held payment stays known to complete(): a
+// late approve in that hour gets ApprovalTimeoutError, after it
+// unknown_or_consumed.
+const STAGED_PRUNE_AFTER_MS = 60 * 60 * 1000;
 
 export function blacktea(options: BlackteaOptions): PayFunction {
   const rails: RailAdapter[] = Array.isArray(options.source) ? options.source : [options.source];
@@ -112,6 +132,136 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     });
   const dryRun = options.dry_run ?? false;
   const onApprovalNeeded = options.onApprovalNeeded;
+  const approvals =
+    options.approvals ??
+    new FileBackedApprovalStore({
+      path: dryRun ? "./.blacktea/approvals-dryrun.jsonl" : "./.blacktea/approvals.jsonl",
+    });
+
+  // Each payment stage() held and nobody has completed yet: the minted
+  // receipt plus private deep copies of everything complete() settles
+  // from. The StagedIntent the caller holds is only a handle; nothing read
+  // from it reaches the rail, history or the idempotency store, so editing
+  // it cannot change what gets paid. complete() claims (removes) the entry
+  // before its first await, which makes an approval single-use. stage()
+  // prunes entries more than STAGED_PRUNE_AFTER_MS past expiry.
+  type HeldPayment = {
+    record: ApprovalRecord;
+    input: PayInput;
+    requirement: PaymentRequirement;
+    opts: PayOptions;
+    railName: string;
+    idempotencyKey: string;
+  };
+  const stagedReceipts = new Map<string, HeldPayment>();
+
+  function pruneStaged(): void {
+    const cutoff = Date.now() - STAGED_PRUNE_AFTER_MS;
+    for (const [intentId, held] of stagedReceipts) {
+      if (Date.parse(held.record.expires_at) < cutoff) stagedReceipts.delete(intentId);
+    }
+  }
+
+  // complete() calls in progress, by intent_id. A concurrent duplicate
+  // approve shares the first call's promise, so exactly one approved and
+  // one settled snapshot are written. Entries are removed once the call
+  // resolves or rejects.
+  const completing = new Map<
+    string,
+    { decision: "approve" | "reject"; promise: Promise<PaymentIntent> }
+  >();
+
+  // ---------- approval receipts ----------
+  //
+  // A receipt is a series of full snapshots, one per state change, appended
+  // to the approval store and mirrored to the audit sink. Writing `staged`
+  // or `approved` fails closed (the error propagates before the rail is
+  // called). Any later state fails open: the caller gets the outcome it
+  // would otherwise get and the audit records approval_record_write_failed.
+
+  function mintReceipt(args: {
+    intentId: string;
+    channel: ApprovalRecord["channel"];
+    input: PayInput;
+    opts: PayOptions;
+    requirement: PaymentRequirement;
+    ruleFired: string;
+    timeoutSeconds: number;
+  }): ApprovalRecord {
+    const { input, requirement } = args;
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
+    return {
+      intent_id: args.intentId,
+      created_at: now,
+      updated_at: now,
+      state: "staged",
+      channel: args.channel,
+      mcp_server: args.opts.origin?.mcp_server ?? null,
+      tool: args.opts.origin?.tool ?? null,
+      actor: null,
+      amount: requirement.amount,
+      currency: requirement.currency,
+      ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
+      recipient_url: input.url,
+      intent: input.intent,
+      trigger: input.trigger ?? null,
+      rule_fired: args.ruleFired,
+      decision_reason: null,
+      params_hash: computeParamsHash(input, requirement),
+      expires_at: new Date(nowMs + args.timeoutSeconds * 1000).toISOString(),
+    };
+  }
+
+  async function writeReceipt(record: ApprovalRecord): Promise<void> {
+    try {
+      await approvals.append(record);
+    } catch (err) {
+      if (record.state === "staged" || record.state === "approved") throw err;
+      emit(audit, "approval_record_write_failed", record.intent_id, {
+        state: record.state,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    // The snapshot is on disk. The audit mirror is best effort: a throwing
+    // sink must not abort the payment or read as a store failure.
+    try {
+      emit(audit, "approval_record", record.intent_id, { ...record });
+    } catch {
+      // Nowhere left to report it: the sink itself is what failed.
+    }
+  }
+
+  async function advanceReceipt(
+    record: ApprovalRecord,
+    state: ApprovalState,
+    decisionReason: string | null = null,
+  ): Promise<ApprovalRecord> {
+    const next: ApprovalRecord = {
+      ...record,
+      state,
+      decision_reason: decisionReason,
+      updated_at: new Date().toISOString(),
+    };
+    await writeReceipt(next);
+    return next;
+  }
+
+  // Approved -> settle -> settled | failed. The approved snapshot is written
+  // before the rail is called.
+  async function settleWithReceipt(
+    args: SettleArgs,
+    record: ApprovalRecord,
+  ): Promise<PaymentIntent> {
+    const approved = await advanceReceipt(record, "approved");
+    const outcome = await settleOnce(args);
+    // `failed` only when the rail did not settle. A later step failing
+    // (history, idempotency cache) still leaves the money moved.
+    await advanceReceipt(approved, outcome.ok || outcome.railSettled ? "settled" : "failed");
+    if (outcome.ok) return outcome.intent;
+    throw outcome.error;
+  }
 
   // ---------- in-flight serialization (concurrent-settle guard) ----------
   //
@@ -121,9 +271,9 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   // yet), so without this guard both would settle on the rail. Bad for a
   // spending-control product. With the guard, the first caller registers a
   // Promise; later concurrent callers await it and return the same
-  // PaymentIntent. The map cleans up on resolve OR reject so failures
-  // propagate to every awaiter and the slot is reclaimable on retry.
-  const inFlight = new Map<string, Promise<PaymentIntent>>();
+  // outcome. Failures propagate to every awaiter and the slot is freed
+  // once the settle ends, so it is reclaimable on retry.
+  const inFlight = new Map<string, Promise<SettleOutcome>>();
 
   // ---------- shared pipeline: prepare ----------
 
@@ -153,6 +303,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       url: input.url,
       intent: input.intent,
       max_amount: input.max_amount,
+      ...(input.trigger !== undefined ? { trigger: input.trigger } : {}),
     });
 
     // Idempotency first. If we have already settled this exact key, return
@@ -200,13 +351,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       return { kind: "rejected", reason: "max_amount_exceeded", ruleFired: "input.max_amount" };
     }
 
-    const policyInput: PaymentIntentInput = {
-      amount: requirement.amount,
-      currency: requirement.currency,
-      url: input.url,
-      intent: input.intent,
-      ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
-    };
+    const policyInput = toPolicyInput(input, requirement);
 
     const decision = await evaluatePolicy(policyInput, policy, history);
     emit(audit, "policy_evaluated", intentId, {
@@ -242,13 +387,27 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     opts: PayOptions;
   };
 
+  // How a settle ended. railSettled says whether money moved (or, under
+  // dry_run, the simulated settle ran) before any error, so receipts never
+  // say `failed` for a payment the rail completed.
+  type SettleOutcome =
+    | { ok: true; intent: PaymentIntent }
+    | { ok: false; error: unknown; railSettled: boolean };
+
   async function settleAndRecord(args: SettleArgs): Promise<PaymentIntent> {
+    const outcome = await settleOnce(args);
+    if (outcome.ok) return outcome.intent;
+    throw outcome.error;
+  }
+
+  function settleOnce(args: SettleArgs): Promise<SettleOutcome> {
     const { idempotencyKey } = args;
     // Concurrent-settle guard. The sequential retry case is handled by the
     // cache check up in prepare(); this catches the case where two callers
     // race through the same key, both find an empty cache, and both reach
-    // settleAndRecord. The first caller's Promise is registered; later
-    // concurrent callers await it and resolve to the same PaymentIntent.
+    // settleOnce. The first caller's Promise is registered; later
+    // concurrent callers await it and get the same outcome (the same
+    // PaymentIntent, or the same error).
     const existing = inFlight.get(idempotencyKey);
     if (existing) {
       emit(audit, "idempotency_concurrent_hit", args.intentId, {
@@ -258,24 +417,45 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     }
     const promise = doSettleAndRecord(args);
     inFlight.set(idempotencyKey, promise);
-    // Clean up on resolve AND reject so a failed settle leaves the slot
-    // reclaimable for a subsequent retry, and so concurrent awaiters all
-    // see the same failure rather than hanging on a stale Promise. Using
-    // .then(cleanup, cleanup) (not .finally) so the cleanup chain doesn't
-    // surface as a floating unhandled rejection when the rail throws:
-    // .finally would propagate the rejection on a Promise nobody awaits;
-    // .then with both callbacks returning void produces a resolved Promise
-    // and the caller's await on `promise` remains the only rejection sink.
-    const cleanup = () => {
+    // The outcome Promise never rejects (errors are carried in it), so
+    // cleanup cannot surface as a floating unhandled rejection. The slot is
+    // freed once settled so a failed settle can be retried.
+    promise.then(() => {
       inFlight.delete(idempotencyKey);
-    };
-    promise.then(cleanup, cleanup);
+    });
     return promise;
   }
 
-  async function doSettleAndRecord(args: SettleArgs): Promise<PaymentIntent> {
+  async function doSettleAndRecord(args: SettleArgs): Promise<SettleOutcome> {
+    let railSettled = false;
+    try {
+      const intent = await settleThenRecord(args, () => {
+        railSettled = true;
+      });
+      return { ok: true, intent };
+    } catch (error) {
+      return { ok: false, error, railSettled };
+    }
+  }
+
+  async function settleThenRecord(
+    args: SettleArgs,
+    markRailSettled: () => void,
+  ): Promise<PaymentIntent> {
     const { intentId, idempotencyKey, rail, requirement, policyInput, ruleFired, input, opts } =
       args;
+
+    // Re-checked here because an approval can sit between prepare()'s cache
+    // check and this point: another payment with the same key may have
+    // settled meanwhile. settleOnce() covers only calls that overlap here.
+    const cached = await idempotency.get(idempotencyKey);
+    if (cached) {
+      emit(audit, "idempotency_hit", intentId, {
+        idempotency_key: idempotencyKey,
+        original_receipt_id: cached.id,
+      });
+      return makeTerminalIntent(intentId, input, "completed", cached, undefined);
+    }
 
     let receipt: Receipt;
     let data: unknown;
@@ -293,6 +473,10 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         receipt = settled.receipt;
         data = settled.data;
       } catch (err) {
+        if (err instanceof QuoteChangedError) {
+          emit(audit, "payment_failed", intentId, { rail: rail.name, error: "quote_changed" });
+          throw err;
+        }
         emit(audit, "payment_failed", intentId, {
           rail: rail.name,
           error: (err as Error).message,
@@ -300,6 +484,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         throw new RailUnavailableError(rail.name, (err as Error).message);
       }
     }
+    markRailSettled();
 
     await history.record({
       ts: receipt.paid_at,
@@ -332,42 +517,86 @@ export function blacktea(options: BlackteaOptions): PayFunction {
 
     const { intentId, idempotencyKey, rail, requirement, policyInput, decision } = prep;
 
-    if (decision.kind === "approval") {
-      const ok = await runApprovalFlow({
+    if (decision.kind !== "approval") {
+      return settleAndRecord({
         intentId,
+        idempotencyKey,
+        rail,
+        requirement,
         policyInput,
-        decision,
-        onApprovalNeeded,
-        audit,
+        ruleFired: decision.rule_fired,
+        input,
+        opts,
       });
-      if (!ok.approved) {
-        if (ok.timed_out) {
-          emit(audit, "approval_timed_out", intentId, {});
-          throw new ApprovalTimeoutError(intentId);
-        }
-        emit(audit, "payment_denied", intentId, {
-          reason: ok.reason ?? "approval_denied",
-          rule_fired: decision.rule_fired,
-        });
-        throw new PolicyDeniedError(ok.reason ?? "approval_denied", decision.rule_fired);
-      }
     }
 
-    return settleAndRecord({
+    if (decision.channel === "callback" && !onApprovalNeeded) {
+      throw new ValidationError(
+        'Policy requires "callback" approval but blacktea() was not given onApprovalNeeded. For MCP servers and chat agents, use pay.stage()/pay.complete() instead.',
+      );
+    }
+
+    const record = mintReceipt({
+      intentId,
+      channel: decision.channel,
+      input,
+      opts,
+      requirement,
+      ruleFired: decision.rule_fired,
+      timeoutSeconds: decision.timeout_seconds,
+    });
+    // Copied right after minting (no await in between), as stage() does:
+    // the settle below reads only these copies, so whatever the approval
+    // callback does to the caller's objects cannot change what gets paid.
+    const copies = privateCopies(input, requirement, opts);
+    const settleArgs: SettleArgs = {
       intentId,
       idempotencyKey,
       rail,
-      requirement,
+      requirement: copies.requirement,
       policyInput,
       ruleFired: decision.rule_fired,
-      input,
-      opts,
-    });
+      input: copies.input,
+      opts: copies.opts,
+    };
+    await writeReceipt(record);
+
+    let ok: ApprovalOutcome;
+    try {
+      ok = await runApprovalFlow({
+        intentId,
+        policyInput,
+        trigger: input.trigger,
+        decision,
+        expiresAt: record.expires_at,
+        onApprovalNeeded,
+        audit,
+      });
+    } catch (err) {
+      await advanceReceipt(record, "denied", "approval_channel_error");
+      throw err;
+    }
+    if (!ok.approved) {
+      if (ok.timed_out) {
+        await advanceReceipt(record, "expired");
+        emit(audit, "approval_timed_out", intentId, {});
+        throw new ApprovalTimeoutError(intentId);
+      }
+      await advanceReceipt(record, "denied", ok.reason ?? null);
+      emit(audit, "payment_denied", intentId, {
+        reason: ok.reason ?? "approval_denied",
+        rule_fired: decision.rule_fired,
+      });
+      throw new PolicyDeniedError(ok.reason ?? "approval_denied", decision.rule_fired);
+    }
+
+    return settleWithReceipt(settleArgs, record);
   }
 
   // ---------- two-phase: stage ----------
 
   async function stage(input: PayInput, opts: PayOptions = {}): Promise<StageResult> {
+    pruneStaged();
     const prep = await prepare(input, opts);
     if (prep.kind === "cached") return { outcome: "completed", intent: prep.intent };
     if (prep.kind === "rejected") {
@@ -380,7 +609,15 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       // Honor the policy's timeout_seconds at stage time. complete() refuses
       // to approve a stage past expires_at; the MCP server uses this instead
       // of a fixed TTL for the staged-intents map.
-      const expiresAt = new Date(Date.now() + decision.timeout_seconds * 1000).toISOString();
+      const record = mintReceipt({
+        intentId,
+        channel: "staged",
+        input,
+        opts,
+        requirement,
+        ruleFired: decision.rule_fired,
+        timeoutSeconds: decision.timeout_seconds,
+      });
       const staged: StagedIntent = {
         intent_id: intentId,
         amount: requirement.amount,
@@ -388,19 +625,31 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
         recipient_url: input.url,
         intent: input.intent,
+        ...(input.trigger !== undefined ? { trigger: input.trigger } : {}),
         rule_fired: decision.rule_fired,
-        expires_at: expiresAt,
+        expires_at: record.expires_at,
         _input: input,
         _requirement: requirement,
         _opts: opts,
         _railName: rail.name,
         _idempotencyKey: idempotencyKey,
       };
+      // Copied with no await since minting, so the copies are exactly what
+      // params_hash describes. The StagedIntent above keeps the caller's
+      // objects and shares no references with the copies.
+      const held: HeldPayment = {
+        record,
+        ...privateCopies(input, requirement, opts),
+        railName: rail.name,
+        idempotencyKey,
+      };
+      await writeReceipt(record);
+      stagedReceipts.set(intentId, held);
       emit(audit, "approval_staged", intentId, {
         amount: requirement.amount,
         currency: requirement.currency,
         rule_fired: decision.rule_fired,
-        expires_at: expiresAt,
+        expires_at: record.expires_at,
         timeout_seconds: decision.timeout_seconds,
       });
       return { outcome: "approval_required", staged };
@@ -421,59 +670,124 @@ export function blacktea(options: BlackteaOptions): PayFunction {
 
   // ---------- two-phase: complete ----------
 
-  async function complete(
+  // Synchronous up to the claim: no await runs before the minted receipt is
+  // taken out of stagedReceipts, so two calls for one intent_id can never
+  // both claim it.
+  function complete(staged: StagedIntent, decision: "approve" | "reject"): Promise<PaymentIntent> {
+    const intentId = staged.intent_id;
+
+    // Checked before the claim, so a bad argument leaves the held payment
+    // usable.
+    if (decision !== "approve" && decision !== "reject") {
+      return Promise.reject(
+        new ValidationError(
+          `Invalid decision: ${String(decision)}. Must be "approve" or "reject".`,
+        ),
+      );
+    }
+
+    // A concurrent duplicate of a call in progress shares its result. A
+    // different decision racing it is refused: the approval is taken.
+    const pending = completing.get(intentId);
+    if (pending) {
+      if (pending.decision === decision) return pending.promise;
+      return Promise.reject(new ApprovalInvalidError(intentId, "unknown_or_consumed"));
+    }
+
+    // Never staged by this factory, or already completed: refuse without a
+    // receipt snapshot or a rail call.
+    const held = stagedReceipts.get(intentId);
+    if (!held) {
+      return Promise.reject(new ApprovalInvalidError(intentId, "unknown_or_consumed"));
+    }
+    stagedReceipts.delete(intentId);
+
+    const promise = resolveStaged(staged, decision, held);
+    completing.set(intentId, { decision, promise });
+    const release = () => {
+      completing.delete(intentId);
+    };
+    // Both handlers given, so cleanup cannot surface as an unhandled
+    // rejection; callers still see the rejection through `promise`.
+    promise.then(release, release);
+    return promise;
+  }
+
+  async function resolveStaged(
     staged: StagedIntent,
     decision: "approve" | "reject",
+    held: HeldPayment,
   ): Promise<PaymentIntent> {
+    const { record, input, requirement } = held;
+    const intentId = record.intent_id;
     if (decision === "reject") {
       // A late reject is still a reject. The payment was never going to
       // settle anyway, so we accept it without checking expiry.
-      emit(audit, "approval_received", staged.intent_id, { decision: "deny" });
-      emit(audit, "payment_denied", staged.intent_id, {
+      await advanceReceipt(record, "denied");
+      emit(audit, "approval_received", intentId, { decision: "deny" });
+      emit(audit, "payment_denied", intentId, {
         reason: "approval_denied",
-        rule_fired: staged.rule_fired,
+        rule_fired: record.rule_fired,
       });
-      return makeDeniedIntent(staged);
+      return makeDeniedIntent(intentId, input, record.rule_fired);
     }
 
     // Approve path. Refuse if the policy's approval window has elapsed: a
     // stage past expires_at must not become a payment, otherwise the
     // policy's timeout_seconds is meaningless on the two-phase / MCP path.
-    const expiresAtMs = Date.parse(staged.expires_at);
-    if (Number.isFinite(expiresAtMs) && Date.now() > expiresAtMs) {
-      emit(audit, "approval_timed_out", staged.intent_id, {
-        expires_at: staged.expires_at,
+    // The window is the minted one: staged.expires_at is caller-held and
+    // could be moved.
+    if (Date.now() > Date.parse(record.expires_at)) {
+      await advanceReceipt(record, "expired");
+      emit(audit, "approval_timed_out", intentId, {
+        expires_at: record.expires_at,
       });
-      throw new ApprovalTimeoutError(staged.intent_id);
+      throw new ApprovalTimeoutError(intentId);
     }
 
-    emit(audit, "approval_received", staged.intent_id, { decision: "approve" });
+    emit(audit, "approval_received", intentId, { decision: "approve" });
 
-    const rail = rails.find((r) => r.name === staged._railName);
+    // The approval covers the request the human saw. The settle below uses
+    // only the private copies, so this check on the caller's staged object
+    // is about refusing loudly: an altered handle means something is wrong.
+    // A request that can no longer be hashed has changed too.
+    let actual: string | null;
+    try {
+      actual = computeParamsHash(staged._input, staged._requirement);
+    } catch {
+      actual = null;
+    }
+    if (actual !== record.params_hash) {
+      await advanceReceipt(record, "failed");
+      emit(audit, "approval_mismatch", intentId, {
+        expected: record.params_hash,
+        actual,
+      });
+      throw new ApprovalInvalidError(intentId, "params_changed");
+    }
+
+    // Nothing read from `staged` past this point.
+    const rail = rails.find((r) => r.name === held.railName);
     if (!rail) {
-      throw new NoEligibleRailError([staged._railName]);
+      await advanceReceipt(record, "failed");
+      throw new NoEligibleRailError([held.railName]);
     }
 
-    const policyInput: PaymentIntentInput = {
-      amount: staged._requirement.amount,
-      currency: staged._requirement.currency,
-      url: staged._input.url,
-      intent: staged._input.intent,
-      ...(staged._requirement.recipient_wallet
-        ? { recipient_wallet: staged._requirement.recipient_wallet }
-        : {}),
-    };
+    const policyInput = toPolicyInput(input, requirement);
 
-    return settleAndRecord({
-      intentId: staged.intent_id,
-      idempotencyKey: staged._idempotencyKey,
-      rail,
-      requirement: staged._requirement,
-      policyInput,
-      ruleFired: staged.rule_fired,
-      input: staged._input,
-      opts: staged._opts,
-    });
+    return settleWithReceipt(
+      {
+        intentId,
+        idempotencyKey: held.idempotencyKey,
+        rail,
+        requirement,
+        policyInput,
+        ruleFired: record.rule_fired,
+        input,
+        opts: held.opts,
+      },
+      record,
+    );
   }
 
   return Object.assign(pay, { stage, complete });
@@ -496,6 +810,48 @@ function validateInput(input: PayInput): void {
       `Invalid max_amount: ${input.max_amount}. Must be a positive number when provided.`,
     );
   }
+  if (
+    input.trigger !== undefined &&
+    (typeof input.trigger !== "string" || input.trigger.length < 1 || input.trigger.length > 500)
+  ) {
+    throw new ValidationError("Invalid trigger. Must be a string of 1 to 500 characters.");
+  }
+}
+
+// ---------- policy input ----------
+
+function toPolicyInput(input: PayInput, requirement: PaymentRequirement): PaymentIntentInput {
+  return {
+    amount: requirement.amount,
+    currency: requirement.currency,
+    url: input.url,
+    intent: input.intent,
+    ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
+  };
+}
+
+// ---------- private copies ----------
+
+/**
+ * Deep copies of what a held payment settles from. The body is copied
+ * through JSON, the form computeParamsHash hashes and the rail sends, so a
+ * Date or a toJSON object is held as hashed and a non-cloneable value
+ * (a function member) cannot throw. Call only after computeParamsHash has
+ * accepted the body.
+ */
+function privateCopies(
+  input: PayInput,
+  requirement: PaymentRequirement,
+  opts: PayOptions,
+): { input: PayInput; requirement: PaymentRequirement; opts: PayOptions } {
+  const { body, ...rest } = input;
+  const inputCopy: PayInput = structuredClone(rest);
+  if (body !== undefined) inputCopy.body = JSON.parse(JSON.stringify(body));
+  return {
+    input: inputCopy,
+    requirement: structuredClone(requirement),
+    opts: structuredClone(opts),
+  };
 }
 
 // ---------- rail selection ----------
@@ -532,12 +888,13 @@ interface ApprovalOutcome {
 async function runApprovalFlow(args: {
   intentId: string;
   policyInput: PaymentIntentInput;
+  trigger: string | undefined;
   decision: { channel: "console" | "callback"; timeout_seconds: number; rule_fired: string };
+  expiresAt: string;
   onApprovalNeeded: OnApprovalNeeded | undefined;
   audit: AuditSink;
 }): Promise<ApprovalOutcome> {
-  const { intentId, policyInput, decision, onApprovalNeeded, audit } = args;
-  const expiresAt = new Date(Date.now() + decision.timeout_seconds * 1000).toISOString();
+  const { intentId, policyInput, trigger, decision, expiresAt, onApprovalNeeded, audit } = args;
 
   emit(audit, "approval_requested", intentId, {
     channel: decision.channel,
@@ -552,6 +909,7 @@ async function runApprovalFlow(args: {
       currency: policyInput.currency,
       url: policyInput.url,
       intent: policyInput.intent,
+      trigger,
       timeoutMs: decision.timeout_seconds * 1000,
     });
   }
@@ -562,13 +920,14 @@ async function runApprovalFlow(args: {
     );
   }
 
-  const request = {
+  const request: ApprovalRequest = {
     intent_id: intentId,
     amount: policyInput.amount,
     currency: policyInput.currency,
     recipient_wallet: policyInput.recipient_wallet,
     recipient_url: policyInput.url,
     intent: policyInput.intent,
+    ...(trigger !== undefined ? { trigger } : {}),
     rule_fired: decision.rule_fired,
     expires_at: expiresAt,
   };
@@ -581,15 +940,21 @@ async function runApprovalFlow(args: {
   if (result.kind === "timeout") {
     return { approved: false, timed_out: true };
   }
-  if (result.d.decision === "approve") {
+  // The callback is customer code: anything but a clear approve or deny is
+  // a denial.
+  const d = result.d as { decision?: unknown; reason?: string } | null | undefined;
+  if (d?.decision === "approve") {
     emit(audit, "approval_received", intentId, { decision: "approve" });
     return { approved: true };
   }
+  if (d?.decision !== "deny") {
+    return { approved: false, reason: "approval_channel_error" };
+  }
   emit(audit, "approval_received", intentId, {
     decision: "deny",
-    reason: result.d.reason,
+    reason: d.reason,
   });
-  return { approved: false, reason: result.d.reason };
+  return { approved: false, reason: d.reason };
 }
 
 async function awaitConsoleApproval(args: {
@@ -598,14 +963,19 @@ async function awaitConsoleApproval(args: {
   currency: string;
   url: string;
   intent: string;
+  trigger: string | undefined;
   timeoutMs: number;
 }): Promise<ApprovalOutcome> {
+  // url, intent and trigger come from the agent: strip control characters so
+  // they cannot forge extra prompt lines or terminal sequences.
+  const triggerLine =
+    args.trigger !== undefined ? `\n  trigger:   ${sanitizeForDisplay(args.trigger)}` : "";
   // eslint-disable-next-line no-console
   console.log(`
 [blacktea] Approval required for payment ${args.intentId}
   amount:    ${args.amount} ${args.currency}
-  recipient: ${args.url}
-  reason:    ${args.intent}
+  recipient: ${sanitizeForDisplay(args.url)}
+  reason:    ${sanitizeForDisplay(args.intent)}${triggerLine}
 `);
 
   const rl = createInterface({ input: stdin, output: stdout });
@@ -677,12 +1047,12 @@ function makeTerminalIntent(
   return intent;
 }
 
-function makeDeniedIntent(staged: StagedIntent): PaymentIntent {
+function makeDeniedIntent(intentId: string, input: PayInput, ruleFired: string): PaymentIntent {
   const intent: PaymentIntent = {
-    id: staged.intent_id,
+    id: intentId,
     status: "denied",
-    input: staged._input,
-    error: new PolicyDeniedError("approval_denied", staged.rule_fired),
+    input,
+    error: new PolicyDeniedError("approval_denied", ruleFired),
     onStatusChange(cb) {
       queueMicrotask(() => cb(intent));
       return () => {};

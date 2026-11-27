@@ -9,126 +9,19 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { blacktea } from "../src/agent.js";
-import { ApprovalTimeoutError, PolicyDeniedError } from "../src/errors.js";
+import { ApprovalTimeoutError, PolicyDeniedError, ValidationError } from "../src/errors.js";
 import type { Policy } from "../src/policy/schema.js";
-import type {
-  AuditEvent,
-  HistoryFilter,
-  HistoryRecord,
-  HistoryStore,
-  PayInput,
-  PayOptions,
-  PaymentRequirement,
-  RailAdapter,
-  Receipt,
-  SettleResult,
-} from "../src/types.js";
-
-class FakeHistory implements HistoryStore {
-  events: HistoryRecord[] = [];
-  async record(event: HistoryRecord): Promise<void> {
-    this.events.push(event);
-  }
-  async sumSince(opts: { seconds: number; filter?: HistoryFilter }): Promise<number> {
-    return this.events.filter((e) => match(e, opts.filter)).reduce((acc, e) => acc + e.amount, 0);
-  }
-  async countSince(opts: { seconds: number; filter?: HistoryFilter }): Promise<number> {
-    return this.events.filter((e) => match(e, opts.filter)).length;
-  }
-  async prune(): Promise<number> {
-    const len = this.events.length;
-    this.events = [];
-    return len;
-  }
-}
-
-function match(e: HistoryRecord, filter: HistoryFilter | undefined): boolean {
-  if (!filter) return true;
-  if (filter.wallet && e.recipient_wallet !== filter.wallet) return false;
-  if (filter.url && e.recipient_url !== filter.url) return false;
-  return true;
-}
-
-/**
- * A configurable rail used only in tests. Default behaviour:
- *   - supports() returns true
- *   - preflight() returns a fixed PaymentRequirement (amount 4, wallet 0xabc)
- *   - settle() returns a fake receipt and a "fake data" body
- *
- * Override any of those by passing a partial behavior object. Tracks
- * settle() calls for assertion.
- */
-function fakeRail(
-  name = "x402",
-  behavior: {
-    supports?: (input: PayInput) => boolean;
-    preflight?: (input: PayInput) => Promise<PaymentRequirement>;
-    settle?: (input: PayInput, req: PaymentRequirement, opts: PayOptions) => Promise<SettleResult>;
-  } = {},
-): RailAdapter & {
-  settleCalls: Array<{ input: PayInput; req: PaymentRequirement }>;
-  preflightCalls: PayInput[];
-} {
-  const settleCalls: Array<{ input: PayInput; req: PaymentRequirement }> = [];
-  const preflightCalls: PayInput[] = [];
-
-  const defaultPreflight = async (input: PayInput): Promise<PaymentRequirement> => {
-    preflightCalls.push(input);
-    return {
-      amount: 4,
-      currency: "USDC",
-      recipient_wallet: "0xabc123",
-      network: "base-sepolia",
-    };
-  };
-
-  const defaultSettle = async (input: PayInput, req: PaymentRequirement): Promise<SettleResult> => {
-    settleCalls.push({ input, req });
-    const receipt: Receipt = {
-      id: "rail_receipt_id",
-      amount: req.amount,
-      currency: req.currency,
-      rail: name,
-      rail_charge_id: "ch_test_123",
-      recipient_url: input.url,
-      recipient_wallet: req.recipient_wallet,
-      paid_at: new Date().toISOString(),
-    };
-    return { receipt, data: { fake: "api response" } };
-  };
-
-  const rail: RailAdapter & {
-    settleCalls: typeof settleCalls;
-    preflightCalls: typeof preflightCalls;
-  } = {
-    name,
-    supports: behavior.supports ?? (() => true),
-    preflight: behavior.preflight
-      ? async (input) => {
-          preflightCalls.push(input);
-          return behavior.preflight ? behavior.preflight(input) : defaultPreflight(input);
-        }
-      : defaultPreflight,
-    settle: behavior.settle
-      ? async (input, req, opts) => {
-          settleCalls.push({ input, req });
-          return behavior.settle ? behavior.settle(input, req, opts) : defaultSettle(input, req);
-        }
-      : defaultSettle,
-    settleCalls,
-    preflightCalls,
-  };
-  return rail;
-}
+import type { ApprovalStore, PayInput, RailAdapter, SettleResult } from "../src/types.js";
+import { FakeHistory, collectingAudit, fakeRail } from "./helpers/fakes.js";
 
 const baseInput: PayInput = {
   url: "https://api.openai.com/v1/chat",
   intent: "buy GPT-4 tokens",
 };
 
-function collectingAudit(): { sink: (e: AuditEvent) => void; events: AuditEvent[] } {
-  const events: AuditEvent[] = [];
-  return { sink: (e) => events.push(e), events };
+/** Discards approval receipts so tests never write ./.blacktea/approvals.jsonl. */
+function noopApprovals(): ApprovalStore {
+  return { append: async () => {} };
 }
 
 describe("blacktea()", () => {
@@ -296,6 +189,7 @@ describe("blacktea()", () => {
       const history = new FakeHistory();
       const onApprovalNeeded = vi.fn(async () => ({ decision: "approve" as const }));
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy,
         history,
@@ -318,6 +212,7 @@ describe("blacktea()", () => {
         reason: "human_said_no",
       }));
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy,
         history,
@@ -332,7 +227,13 @@ describe("blacktea()", () => {
     it("throws ValidationError if callback channel fires but no onApprovalNeeded is configured", async () => {
       const rail = fakeRail();
       const history = new FakeHistory();
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       await expect(pay(baseInput)).rejects.toThrow(/onApprovalNeeded/);
     });
@@ -351,6 +252,7 @@ describe("blacktea()", () => {
       };
       const onApprovalNeeded = vi.fn(() => new Promise<never>(() => {}));
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy: policyShort,
         history,
@@ -377,6 +279,7 @@ describe("blacktea()", () => {
         return { decision: "approve" as const };
       });
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy,
         history,
@@ -584,6 +487,27 @@ describe("blacktea()", () => {
     it("throws ValidationError on zero max_amount", async () => {
       await expect(makePay()({ ...baseInput, max_amount: 0 })).rejects.toThrow(/max_amount/);
     });
+
+    it("throws ValidationError on an empty trigger", async () => {
+      await expect(makePay()({ ...baseInput, trigger: "" })).rejects.toThrow(ValidationError);
+    });
+
+    it("throws ValidationError on a trigger over 500 characters", async () => {
+      await expect(makePay()({ ...baseInput, trigger: "x".repeat(501) })).rejects.toThrow(
+        ValidationError,
+      );
+    });
+
+    it("throws ValidationError on a non-string trigger", async () => {
+      await expect(makePay()({ ...baseInput, trigger: 5 as never })).rejects.toThrow(
+        ValidationError,
+      );
+    });
+
+    it("accepts a trigger of exactly 500 characters", async () => {
+      const intent = await makePay()({ ...baseInput, trigger: "x".repeat(500) });
+      expect(intent.status).toBe("completed");
+    });
   });
 
   describe("constructor validation", () => {
@@ -641,7 +565,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_lt: 10 }, then: { approve: true } }],
         default: { approval: "callback" },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const result = await pay.stage(baseInput);
 
@@ -660,7 +590,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { reject: "too_expensive" } }],
         default: { approve: true },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const result = await pay.stage(baseInput);
 
@@ -679,7 +615,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
         default: { approve: true },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const result = await pay.stage(baseInput);
 
@@ -700,7 +642,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const rail = fakeRail(); // preflight amount is 4
       const history = new FakeHistory();
       const policy: Policy = { rules: [], default: { approve: true } };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const result = await pay.stage({ ...baseInput, max_amount: 1 });
 
@@ -719,7 +667,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
         default: { approve: true },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const staged = await pay.stage(baseInput);
       if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
@@ -745,7 +699,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
         default: { approve: true },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const staged = await pay.stage(baseInput);
       if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
@@ -768,7 +728,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         default: { approve: true },
       };
       const audit = collectingAudit();
-      const pay = blacktea({ source: rail, policy, history, audit: audit.sink });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: audit.sink,
+      });
 
       const staged = await pay.stage(baseInput);
       if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
@@ -801,6 +767,7 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const rail = fakeRail();
       const history = new FakeHistory();
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy: expiringPolicy(60),
         history,
@@ -824,19 +791,25 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const history = new FakeHistory();
       const audit = collectingAudit();
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy: expiringPolicy(60),
         history,
         audit: audit.sink,
       });
 
-      const result = await pay.stage(baseInput);
-      if (result.outcome !== "approval_required") throw new Error("expected approval_required");
+      vi.useFakeTimers();
+      try {
+        const result = await pay.stage(baseInput);
+        if (result.outcome !== "approval_required") throw new Error("expected approval_required");
 
-      // Force expiry without sleeping: mutate the staged intent into the past.
-      const expired = { ...result.staged, expires_at: "1970-01-01T00:00:00.000Z" };
+        // Force expiry without sleeping: move the clock past the minted window.
+        vi.setSystemTime(Date.parse(result.staged.expires_at) + 1000);
 
-      await expect(pay.complete(expired, "approve")).rejects.toThrow(ApprovalTimeoutError);
+        await expect(pay.complete(result.staged, "approve")).rejects.toThrow(ApprovalTimeoutError);
+      } finally {
+        vi.useRealTimers();
+      }
       // Nothing settled, nothing recorded.
       expect(rail.settleCalls).toHaveLength(0);
       expect(history.events).toHaveLength(0);
@@ -853,18 +826,24 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const rail = fakeRail();
       const history = new FakeHistory();
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy: expiringPolicy(60),
         history,
         audit: () => {},
       });
 
-      const result = await pay.stage(baseInput);
-      if (result.outcome !== "approval_required") throw new Error("expected approval_required");
-      const expired = { ...result.staged, expires_at: "1970-01-01T00:00:00.000Z" };
+      vi.useFakeTimers();
+      try {
+        const result = await pay.stage(baseInput);
+        if (result.outcome !== "approval_required") throw new Error("expected approval_required");
+        vi.setSystemTime(Date.parse(result.staged.expires_at) + 1000);
 
-      const intent = await pay.complete(expired, "reject");
-      expect(intent.status).toBe("denied");
+        const intent = await pay.complete(result.staged, "reject");
+        expect(intent.status).toBe("denied");
+      } finally {
+        vi.useRealTimers();
+      }
       expect(rail.settleCalls).toHaveLength(0);
     });
   });
@@ -922,7 +901,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const rail = slowRail();
       const history = new FakeHistory();
       const policy: Policy = { rules: [], default: { approve: true } };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       // Fire two concurrent calls sharing one idempotency_key. Both must
       // reach settleAndRecord before either resolves; only one settle.
@@ -955,7 +940,18 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
         default: { approve: true },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const states: string[] = [];
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: {
+          append: async (r) => {
+            states.push(r.state);
+          },
+        },
+        audit: () => {},
+      });
 
       const staged = await pay.stage(baseInput);
       if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
@@ -975,6 +971,8 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       expect(i2.status).toBe("completed");
       expect(i1.id).toBe(i2.id);
       expect(history.events).toHaveLength(1);
+      // One receipt, advanced once: no duplicate approved or settled snapshot.
+      expect(states).toEqual(["staged", "approved", "settled"]);
     });
 
     it("propagates a rejection from settle to BOTH concurrent callers without unhandled rejections", async () => {
@@ -1000,6 +998,7 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       };
       const policy: Policy = { rules: [], default: { approve: true } };
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: failingRail,
         policy,
         history: new FakeHistory(),
@@ -1028,7 +1027,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const rail = slowRail();
       const history = new FakeHistory();
       const policy: Policy = { rules: [], default: { approve: true } };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const p1 = pay(baseInput, { idempotency_key: "key_one" });
       const p2 = pay(baseInput, { idempotency_key: "key_two" });

@@ -5,31 +5,53 @@ developer pain, and enough context to pick it up cold.
 
 ## Open
 
-(none from the 2026-05-29 security review)
+### x402: a signed payment that errors after send is recorded as failed and not counted in history
+
+From the 2026-11-27 final review of `feat/approval-receipts`. If the server
+takes the signed payment header and then answers non-2xx, or the
+connection drops, `settle()` throws, the receipt ends `failed`, nothing is
+recorded in history, and the signed authorization stays redeemable until
+it expires. Spend limits then undercount money that may have moved.
+Code: `src/rails/x402.ts` (the `settle` catch and the non-OK branch),
+`src/agent.ts` (`doSettleAndRecord`). Direction: once the selector has
+accepted a quote, throw a distinct error that says the payment may have
+been paid, and record it to history conservatively.
+
+### Normalize EVM address casing in preflight, wallet_in and history filters
+
+From the same review. The x402 selector accepts a payee that differs only
+in letter case, and the receipt now keeps the approved casing, but the
+history filter (`src/history/file-backed.ts`) and the policy `wallet_in`
+operator (`src/policy/evaluator.ts`) still compare addresses exactly. A
+policy written with checksummed addresses can miss a lowercase quote.
+Direction: normalize addresses once at preflight and compare
+case-insensitively in both places.
 
 ## Publishing discipline
 
-### ⚠ ApprovalRecord schema merged but unpublished — DO NOT `npm publish` until implementation lands
+Publishing `@nmrtn/blacktea` 0.1.5 is unblocked. It is a manual step
+(`npm publish`, run by hand). The MCP branch waits for it: it depends on the
+0.1.5 SDK and must not merge or publish before it.
 
-PR #6 merged on `main` adds `src/approval-record.ts` and exports
-`ApprovalRecord` / `ApprovalRoute` / `ApprovalFinalState` from
-`src/index.ts`. These types are a **design preview**: the contract is
-public on `main` but no code emits an `ApprovalRecord` yet.
+Publish `@nmrtn/blacktea-mcp` 0.1.4 immediately after SDK 0.1.5. The
+already-published MCP 0.1.3 resolves SDK 0.1.5 on fresh installs, passes no
+approvals store, and so writes receipts to `./.blacktea/approvals.jsonl`
+under the host's working directory. Where that directory is not writable,
+approval-required payments fail closed until MCP 0.1.4 is out.
 
-If you `npm publish` from `main` as-is, those types ship to npm without
-the working feature behind them. The right cadence is:
+---
 
-1. Implement emission in `agent.ts` (mint a record at `approval_staged`,
-   update lifecycle state through `payment_completed` / `payment_denied` /
-   `approval_timed_out`, write append-only to the audit JSONL tagged
-   `event: "approval_record"`, add the JCS canonicalizer for
-   `params_hash` per the schema's tagged format).
-2. Add tests for emission.
-3. Bump SDK to **0.1.5**.
-4. CHANGELOG + publish.
+## Done in v0.1.5 (2026-11-27)
 
-Until step 3, leave the version at 0.1.4 on `main` and do not publish.
-The schema lives in source as a contract for the upcoming feature.
+### ✅ ApprovalRecord emission
+
+The `ApprovalRecord` schema that sat on `main` as an unpublished design
+preview is now backed by the feature. `agent.ts` mints a receipt when a
+payment is held, advances it through approved, denied, expired, settled and
+failed, appends it to `./.blacktea/approvals.jsonl`, and mirrors each
+snapshot to the audit sink as `approval_record`. Also shipped: the `trigger`
+input, single-use approvals bound to the staged request, the x402 settle-time
+quote check, and `blacktea approvals show`.
 
 ---
 

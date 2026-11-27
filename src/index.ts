@@ -6,7 +6,7 @@
  * of this barrel so plain consumers do not pay for unused rail clients.
  */
 
-export const VERSION = "0.1.4";
+export const VERSION = "0.1.5";
 
 export { blacktea } from "./agent.js";
 export type { BlackteaOptions, PayFunction } from "./agent.js";
@@ -15,6 +15,7 @@ export type {
   ApprovalChannel,
   ApprovalDecision,
   ApprovalRequest,
+  ApprovalStore,
   AuditEvent,
   AuditSink,
   HistoryFilter,
@@ -37,24 +38,24 @@ export type {
 } from "./types.js";
 
 export {
+  ApprovalInvalidError,
   ApprovalTimeoutError,
   NetworkError,
   NoEligibleRailError,
   PolicyDeniedError,
   PolicyParseError,
+  QuoteChangedError,
   RailUnavailableError,
   ValidationError,
   isBlackteaError,
 } from "./errors.js";
 
-export type {
-  ApprovalFinalState,
-  ApprovalRecord,
-  ApprovalRoute,
-} from "./approval-record.js";
+export type { ApprovalRecord, ApprovalState } from "./approval-record.js";
+export { sanitizeForDisplay } from "./display.js";
 export type { Policy, PolicyAction, PolicyCondition, PolicyRule } from "./policy/schema.js";
 export { PolicySchema } from "./policy/schema.js";
 export { loadPolicy } from "./policy/load.js";
 
 export { InMemoryIdempotencyStore } from "./idempotency/in-memory.js";
+export { FileBackedApprovalStore } from "./approvals/file-backed.js";
 export { FileBackedHistoryStore } from "./history/file-backed.js";

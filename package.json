@@ -1,6 +1,6 @@
 {
   "name": "@nmrtn/blacktea",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Spending controls for AI agents paying online.",
   "license": "MIT",
   "author": "Nicolas",
@@ -37,7 +37,7 @@
   "dependencies": {
     "commander": "^14.0.3",
     "lru-cache": "^11.0.0",
-    "x402-fetch": "^1.2.0",
+    "x402-fetch": "1.2.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

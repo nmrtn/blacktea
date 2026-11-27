@@ -8,35 +8,39 @@
  *
  * Commands:
  *   pay              run a paid HTTP request end to end
- *   audit show       inspect the recent history
+ *   audit show       inspect completed payments (the history file)
+ *   approvals show   inspect approval receipts (held, denied, expired, settled)
  *   policy validate  schema-check a policy file
  *   policy test      evaluate a policy against a synthetic payment
  *
  * Output is JSON by default for the data commands (so agents can parse
- * it cleanly with their existing tools). The audit-show command
- * pretty-prints unless --json is passed.
+ * it cleanly with their existing tools). The audit-show and
+ * approvals-show commands pretty-print unless --json is passed.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Command } from "commander";
 import { blacktea } from "./agent.js";
+import { FileBackedApprovalStore } from "./approvals/file-backed.js";
+import { sanitizeForDisplay } from "./display.js";
 import {
+  ApprovalInvalidError,
   ApprovalTimeoutError,
   NoEligibleRailError,
   PolicyDeniedError,
   PolicyParseError,
+  QuoteChangedError,
   RailUnavailableError,
   ValidationError,
   isBlackteaError,
 } from "./errors.js";
+import { VERSION } from "./index.js";
 import { evaluatePolicy } from "./policy/evaluator.js";
 import { loadPolicy } from "./policy/load.js";
 import { PolicySchema } from "./policy/schema.js";
 import { x402Wallet } from "./rails/x402.js";
 import type { HistoryQuery } from "./types.js";
-
-const VERSION = "0.1.4";
 
 const program = new Command();
 program
@@ -73,6 +77,10 @@ program
       return n;
     },
   )
+  .option(
+    "-t, --trigger <text>",
+    "what prompted this payment (1-500 chars); recorded on the approval receipt, reported by the agent, not proof",
+  )
   .option("-p, --policy <path>", "path to policy.json", "./policy.json")
   .option("--chain <chain>", "EVM chain", "base-sepolia")
   .option("--key-env <name>", "env var holding the wallet private key", "EVM_PRIVATE_KEY")
@@ -103,6 +111,7 @@ program
       const intent = await pay({
         url: opts.url,
         intent: opts.intent,
+        ...(opts.trigger !== undefined ? { trigger: opts.trigger } : {}),
         // Explicit-undefined check, NOT truthy. opts.maxAmount === 0 would
         // never reach here (the strict parser above rejects it), but the
         // explicit check is what we want any future reader to see.
@@ -141,7 +150,7 @@ const audit = program
 audit
   .command("show")
   .description(
-    "Print recent completed payments from the history file. Held, denied, and expired payments live in the audit sink, not here.",
+    "Print recent completed payments from the history file. Held, denied, and expired payments are in `approvals show`.",
   )
   .option("-n, --last <n>", "number of events to show", (v) => Number.parseInt(v, 10), 20)
   .option("--json", "output one JSON object per line")
@@ -186,6 +195,50 @@ audit
       } catch {
         // Skip malformed lines
       }
+    }
+  });
+
+// ---------- approvals ----------
+
+const approvals = program
+  .command("approvals")
+  .description("Inspect approval receipts (payments that needed a human).");
+
+approvals
+  .command("show")
+  .description(
+    "Print recent approval receipts, newest first, one row per payment at its latest state.",
+  )
+  .option("-n, --last <n>", "number of receipts to show", (v) => Number.parseInt(v, 10), 20)
+  .option("--json", "output one JSON object per line")
+  .option("--store <path>", "path to approvals file", "./.blacktea/approvals.jsonl")
+  .action((opts) => {
+    const now = Date.now();
+    const rows = FileBackedApprovalStore.readLatest(opts.store)
+      .slice(0, opts.last)
+      .map((r) => {
+        const lapsed = r.state === "staged" && Date.parse(r.expires_at) < now;
+        return { record: r, display_state: lapsed ? "expired (unresolved)" : r.state };
+      });
+    if (opts.json) {
+      for (const { record, display_state } of rows) {
+        console.log(JSON.stringify({ ...record, display_state }));
+      }
+      return;
+    }
+    console.log(
+      "Time                      State                 Amount        Recipient                                  Trigger",
+    );
+    console.log(
+      "------------------------- --------------------- ------------- ------------------------------------------ ----------------------------------------",
+    );
+    for (const { record: r, display_state } of rows) {
+      const amt = `${r.amount} ${r.currency}`.padEnd(13);
+      const recipient = sanitizeForDisplay(r.recipient_wallet ?? r.recipient_url).padEnd(42);
+      const trigger = sanitizeForDisplay(r.trigger ?? "-").slice(0, 40);
+      console.log(
+        `${r.updated_at.padEnd(25)} ${display_state.padEnd(21)} ${amt} ${recipient} ${trigger}`,
+      );
     }
   });
 
@@ -306,6 +359,8 @@ function exitCodeFor(err: unknown): number {
   if (err instanceof RailUnavailableError) return 6;
   if (err instanceof ValidationError) return 7;
   if (err instanceof PolicyParseError) return 8;
+  if (err instanceof QuoteChangedError) return 9;
+  if (err instanceof ApprovalInvalidError) return 10;
   return 1;
 }
 
