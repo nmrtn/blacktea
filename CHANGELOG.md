@@ -8,6 +8,35 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
+## `@nmrtn/blacktea-mcp` v0.1.4 - 2026-11-27
+
+Approval receipts and the `trigger` input for the MCP server. Requires
+`@nmrtn/blacktea` 0.1.5.
+
+### Added
+
+- **`trigger` argument on `pay`.** What prompted the payment, as reported by
+  the agent (1 to 500 characters). It is shown to the human in the approval
+  message and stored on the approval receipt. A trigger that is not a string,
+  is empty, or is longer than 500 characters returns `invalid_input` before
+  anything is staged.
+- **Approval receipts.** Every held payment is written to
+  `approvals.jsonl` next to the history file, or to the path in the new
+  `BLACKTEA_APPROVALS` env var. Receipts record the server and tool that
+  produced them. The ready banner on stderr now shows `approvals=<path>`.
+- The `approval_required` response now includes `trigger` (or null) and
+  `intent`, and its message carries `Reported trigger: ...` when a trigger
+  was given. Control characters in the intent and trigger are replaced with
+  spaces in the message.
+
+### Changed
+
+- The `audit_query` description now says held and denied payments are in the
+  approvals file, not the history file.
+- Depends on `@nmrtn/blacktea` `^0.1.5`.
+
+---
+
 ## `@nmrtn/blacktea` v0.1.5 - 2026-11-27
 
 Approval receipts, the `trigger` input, and a settle-time quote check for x402.

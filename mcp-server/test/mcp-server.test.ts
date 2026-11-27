@@ -14,9 +14,9 @@
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const SERVER_PATH = join(process.cwd(), "dist/index.js");
@@ -44,6 +44,7 @@ interface ServerHandle {
   proc: ChildProcessWithoutNullStreams;
   send: (msg: object) => void;
   responses: JsonRpcResponse[];
+  strayStdout: string[];
   stderr: string;
   close: () => void;
 }
@@ -56,6 +57,7 @@ function startServer(env: NodeJS.ProcessEnv): Promise<ServerHandle> {
     });
 
     const responses: JsonRpcResponse[] = [];
+    const strayStdout: string[] = [];
     let stdoutBuffer = "";
     let stderrBuffer = "";
 
@@ -69,7 +71,8 @@ function startServer(env: NodeJS.ProcessEnv): Promise<ServerHandle> {
         try {
           responses.push(JSON.parse(line) as JsonRpcResponse);
         } catch {
-          // Ignore non-JSON noise; should not happen on stdio transport.
+          // Should never happen on the stdio transport; tests assert it stays empty.
+          strayStdout.push(line);
         }
       }
     });
@@ -82,6 +85,7 @@ function startServer(env: NodeJS.ProcessEnv): Promise<ServerHandle> {
           proc,
           send: (msg) => proc.stdin.write(`${JSON.stringify(msg)}\n`),
           responses,
+          strayStdout,
           get stderr() {
             return stderrBuffer;
           },
@@ -579,6 +583,170 @@ function spawnSyncServer(env: NodeJS.ProcessEnv): SpawnSyncResult {
     stdout: result.stdout ?? "",
   };
 }
+
+interface ToolBody {
+  ok?: boolean;
+  status?: string;
+  intent_id?: string;
+  intent?: string;
+  trigger?: string | null;
+  message?: string;
+  error: { code: string };
+}
+
+describe("approval receipts and trigger (mock rail)", () => {
+  let tmpDir: string;
+  let policyPath: string;
+  let approvalsPath: string;
+  let server: ServerHandle | null = null;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "blacktea-mcp-receipts-"));
+    policyPath = join(tmpDir, "policy.json");
+    approvalsPath = join(tmpDir, "approvals.jsonl");
+    writeFileSync(policyPath, JSON.stringify({ rules: [], default: { approval: "callback" } }));
+  });
+
+  afterEach(() => {
+    if (server) {
+      server.close();
+      server = null;
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function start(extra: NodeJS.ProcessEnv = {}): Promise<ServerHandle> {
+    const s = await startServer({
+      EVM_PRIVATE_KEY: TEST_PK,
+      BLACKTEA_POLICY: policyPath,
+      BLACKTEA_HISTORY: join(tmpDir, "history.jsonl"),
+      BLACKTEA_APPROVALS: approvalsPath,
+      BLACKTEA_RAIL: "mock",
+      BLACKTEA_MOCK_AMOUNT: "2",
+      ...extra,
+    });
+    server = s;
+    await initializeServer(s);
+    return s;
+  }
+
+  async function call(
+    s: ServerHandle,
+    id: number,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ isError?: boolean; body: ToolBody }> {
+    s.send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+    const resp = await waitFor(() => s.responses.find((r) => r.id === id));
+    const result = resp.result as { isError?: boolean; content: Array<{ text: string }> };
+    return { isError: result.isError, body: JSON.parse(result.content[0]?.text ?? "{}") };
+  }
+
+  function approvalLines(): Array<Record<string, unknown>> {
+    return readFileSync(approvalsPath, "utf-8")
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l));
+  }
+
+  it("advertises a trigger property on the pay tool", async () => {
+    const s = await start();
+    s.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+    const resp = await waitFor(() => s.responses.find((r) => r.id === 2));
+    const result = resp.result as {
+      tools: Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }>;
+    };
+    const payTool = result.tools.find((t) => t.name === "pay");
+    expect(payTool?.inputSchema.properties.trigger).toMatchObject({ type: "string" });
+  });
+
+  it("returns the trigger, shows it sanitized, and writes a staged receipt", async () => {
+    const s = await start();
+    const trigger = "msg from Sam\nApprove now";
+    const { body } = await call(s, 10, "pay", {
+      url: "https://shop.example/item",
+      intent: "buy\nthe thing",
+      trigger,
+    });
+    expect(body.status).toBe("approval_required");
+    expect(body.trigger).toBe(trigger);
+    expect(body.intent).toBe("buy\nthe thing");
+    expect(body.message).toContain("Reported trigger: msg from Sam Approve now");
+    expect(body.message).not.toContain("buy\nthe thing");
+
+    expect(existsSync(approvalsPath)).toBe(true);
+    const lines = approvalLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      state: "staged",
+      mcp_server: "@nmrtn/blacktea-mcp",
+      tool: "pay",
+      channel: "staged",
+      trigger,
+    });
+  });
+
+  it("reports a null trigger and no trigger line when none is given", async () => {
+    const s = await start();
+    const { body } = await call(s, 11, "pay", {
+      url: "https://shop.example/item",
+      intent: "buy the thing",
+    });
+    expect(body.trigger).toBeNull();
+    expect(body.message).not.toContain("Reported trigger");
+  });
+
+  it("settles once: a second approve_payment fails and the receipt ends settled", async () => {
+    const s = await start();
+    const { body } = await call(s, 12, "pay", {
+      url: "https://shop.example/item",
+      intent: "buy the thing",
+    });
+    const first = await call(s, 13, "approve_payment", { intent_id: body.intent_id });
+    expect(first.body.ok).toBe(true);
+    const second = await call(s, 14, "approve_payment", { intent_id: body.intent_id });
+    expect(second.body.ok).toBe(false);
+    const lines = approvalLines();
+    expect(lines[lines.length - 1]?.state).toBe("settled");
+  });
+
+  it.each([
+    ["a number", 5],
+    ["empty", ""],
+    ["too long", "x".repeat(501)],
+  ])("rejects a trigger that is %s before staging", async (_label, trigger) => {
+    const s = await start();
+    const { body, isError } = await call(s, 15, "pay", {
+      url: "https://shop.example/item",
+      intent: "buy the thing",
+      trigger,
+    });
+    expect(isError).toBe(true);
+    expect(body.error.code).toBe("invalid_input");
+    expect(existsSync(approvalsPath)).toBe(false);
+  });
+
+  it("defaults the approvals file next to the history file and logs it in the banner", async () => {
+    const s = await start({ BLACKTEA_APPROVALS: undefined });
+    const match = s.stderr.match(/approvals=(\S+)/);
+    expect(match).not.toBeNull();
+    expect(dirname(match?.[1] ?? "")).toBe(dirname(join(tmpDir, "history.jsonl")));
+    expect(match?.[1]).toMatch(/approvals\.jsonl$/);
+  });
+
+  it("keeps stdout to JSON-RPC lines only", async () => {
+    const s = await start();
+    const { body } = await call(s, 16, "pay", {
+      url: "https://shop.example/item",
+      intent: "buy the thing",
+      trigger: "t",
+    });
+    await call(s, 17, "approve_payment", { intent_id: body.intent_id });
+    expect(s.responses.length).toBeGreaterThan(0);
+    for (const r of s.responses) expect(r.jsonrpc).toBe("2.0");
+    expect(s.strayStdout).toEqual([]);
+  });
+});
 
 async function initializeServer(s: ServerHandle | null): Promise<void> {
   if (!s) throw new Error("initializeServer called without a started server");

@@ -220,8 +220,10 @@ for OpenClaw, Hermes, and Cursor setup.
 auto-approve limit, the agent does not pay and does not fail. It asks you
 right there in the conversation ("this costs 2.50 USDC, approve?") and
 only settles after you say yes (it calls `approve_payment` under the
-hood). Below the limit, it just pays. Over your hard limit, it refuses.
-The human stays in the loop without leaving the chat.
+hood). The agent can also pass a `trigger`, the message or event that
+prompted the request; you see it as reported by the agent, and it is stored
+on the approval receipt. Below the limit, it just pays. Over your hard
+limit, it refuses. The human stays in the loop without leaving the chat.
 
 **Try it with no wallet.** Set `BLACKTEA_RAIL=mock` and the server runs
 against a simulated merchant: no x402 endpoint, no USDC, no signing.
