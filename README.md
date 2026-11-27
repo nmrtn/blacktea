@@ -249,8 +249,11 @@ blacktea approvals show --json
 ```
 
 A receipt ends in `settled` whenever the rail has paid, even if a later
-bookkeeping step fails. `failed` means the rail did not pay. If the receipt
-for `staged` or `approved` cannot be written, the payment is blocked.
+bookkeeping step fails. `failed` means the rail reported a failure. On x402,
+a payment that was already signed and sent may still be redeemed by the
+server even when the receipt says `failed` (for example when the server
+answers with an error after taking the payment). If the receipt for `staged`
+or `approved` cannot be written, the payment is blocked.
 
 Approvals are single-use and bound to the request the human saw. With the
 two-phase API, `pay.stage()` holds the payment and `pay.complete()` settles

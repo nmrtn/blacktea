@@ -30,8 +30,11 @@ Approval receipts, the `trigger` input, and a settle-time quote check for x402.
   `./.blacktea/approvals.jsonl` (`./.blacktea/approvals-dryrun.jsonl` under
   `dry_run`) and mirrored to the audit sink as `approval_record`. A receipt
   ends in `settled` whenever the rail has paid, even if a later bookkeeping
-  step fails; `failed` means the rail did not pay. If the receipt for
-  `staged` or `approved` cannot be written, the payment is blocked. New
+  step fails; `failed` means the rail reported a failure. On x402 a payment
+  that was already signed and sent may still be redeemed by the server even
+  when the receipt says `failed` (for example when the server answers with
+  an error after taking the payment). If the receipt for `staged` or
+  `approved` cannot be written, the payment is blocked. New
   `approvals` option on the factory and `ApprovalStore` interface.
 - **`trigger` input** on `pay()` and `pay.stage()`: what the agent says
   prompted the payment (1 to 500 characters). Recorded on the receipt and
@@ -58,6 +61,23 @@ Approval receipts, the `trigger` input, and a settle-time quote check for x402.
 - `approval_requested` is no longer emitted when a `callback` approval is
   required but no `onApprovalNeeded` was given (the `ValidationError` is
   thrown first).
+- `pay()` settles from private copies of the input taken when the payment
+  is held for approval. Changing the request object while the human
+  decides (from `onApprovalNeeded`, for example) no longer changes what is
+  paid. Request bodies are held in their JSON form, on both `pay()` and
+  `pay.stage()`.
+- An idempotency key is checked again just before the rail is called. Two
+  payments with the same key that both wait for approval now settle once;
+  the second returns the first one's receipt.
+- `pay.complete()` throws `ValidationError` for a decision other than
+  `"approve"` or `"reject"`, and the held payment stays usable.
+- The x402 receipt records the approved payee casing when the server
+  answers with the same address in a different letter case.
+- An `onApprovalNeeded` that throws now ends the receipt in `denied` with
+  `decision_reason: "approval_channel_error"` and rethrows its error. A
+  result that is neither approve nor deny is a denial with that reason
+  (`PolicyDeniedError`).
+- `x402-fetch` is pinned to 1.2.0.
 
 ---
 
