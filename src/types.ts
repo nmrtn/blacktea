@@ -11,6 +11,8 @@
  * PaymentRequirement that the rail returned from preflight().
  */
 
+import type { ApprovalRecord } from "./approval-record.js";
+
 /**
  * What the agent passes to pay(). The url is the API endpoint being called.
  * max_amount is an optional safety cap; if the server asks for more, the
@@ -23,6 +25,8 @@ export interface PayInput {
   method?: string;
   body?: unknown;
   headers?: Record<string, string>;
+  /** What the agent says prompted this payment. Reported by the agent, not proof. */
+  trigger?: string;
 }
 
 /**
@@ -120,6 +124,7 @@ export interface StagedIntent {
   recipient_url: string;
   intent: string;
   rule_fired: string;
+  trigger?: string;
   /**
    * ISO-8601 timestamp after which `pay.complete(staged, "approve")` will
    * throw `ApprovalTimeoutError`. Computed from the policy's
@@ -156,6 +161,8 @@ export interface PayOptions {
   idempotency_key?: string;
   rail?: string;
   timeout_seconds?: number;
+  /** Provenance when the call came through an MCP server. */
+  origin?: { mcp_server: string; tool: string };
 }
 
 /**
@@ -234,6 +241,7 @@ export interface ApprovalRequest {
   recipient_wallet?: string;
   recipient_url?: string;
   intent: string;
+  trigger?: string;
   rule_fired: string;
   expires_at: string;
 }
@@ -241,6 +249,14 @@ export interface ApprovalRequest {
 export interface ApprovalDecision {
   decision: "approve" | "deny";
   reason?: string;
+}
+
+/**
+ * Sink for approval receipts. Each append is a full snapshot; the latest
+ * snapshot per intent_id is the current receipt.
+ */
+export interface ApprovalStore {
+  append(record: ApprovalRecord): Promise<void>;
 }
 
 export type OnApprovalNeeded = (req: ApprovalRequest) => Promise<ApprovalDecision>;
