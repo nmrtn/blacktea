@@ -190,7 +190,7 @@ Total cap is fine, but you also want a per-wallet cap. Even if there is daily bu
 ```
 
 The `by` parameter:
-- `"wallet"`: filter history to the current payment's recipient wallet.
+- `"wallet"`: filter history to the current payment's recipient wallet (letter case ignored).
 - `"url"`: filter history to the current URL host.
 - `"all"` or omitted: no filter, total across everything.
 
@@ -249,7 +249,7 @@ The `intent` string is fuzzy by nature. The agent may say `"send funds to John"`
 | `amount_lte` | `{ amount_lte: 10 }` | Less than or equal |
 | `amount_gt` | `{ amount_gt: 100 }` | Greater than |
 | `amount_gte` | `{ amount_gte: 100 }` | Greater than or equal |
-| `wallet_in` | `{ wallet_in: "./file.txt" }` or `{ wallet_in: ["0x...", "0x..."] }` | Recipient wallet matches an entry in the list |
+| `wallet_in` | `{ wallet_in: "./file.txt" }` or `{ wallet_in: ["0x...", "0x..."] }` | Recipient wallet matches an entry in the list, ignoring letter case |
 | `url_starts_with` | `{ url_starts_with: "https://..." }` | Recipient URL begins with the prefix |
 | `intent_contains_any` | `{ intent_contains_any: ["word", "word"] }` | Intent string contains any of the substrings (case-insensitive) |
 | `intent_contains_all` | `{ intent_contains_all: ["word", "word"] }` | Intent string contains all of them |

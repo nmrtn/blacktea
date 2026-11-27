@@ -173,6 +173,26 @@ describe("evaluatePolicy", () => {
       expect(d).toEqual({ kind: "reject", reason: "blocked", rule_fired: "rule[0]" });
     });
 
+    it("ignores letter case, in the list and in the quoted address", async () => {
+      const policy: Policy = {
+        rules: [{ if: { wallet_in: ["0xABC123"] }, then: { reject: "blocked" } }],
+        default: { approve: true },
+      };
+      const lower = await evaluatePolicy(baseInput, policy, history);
+      expect(lower.kind).toBe("reject");
+
+      const lowerList: Policy = {
+        rules: [{ if: { wallet_in: ["0xabc123"] }, then: { reject: "blocked" } }],
+        default: { approve: true },
+      };
+      const upper = await evaluatePolicy(
+        { ...baseInput, recipient_wallet: "0xAbC123" },
+        lowerList,
+        history,
+      );
+      expect(upper.kind).toBe("reject");
+    });
+
     it("does not match when recipient is not in the array", async () => {
       const policy: Policy = {
         rules: [{ if: { wallet_in: ["0xdef456"] }, then: { reject: "blocked" } }],
