@@ -569,6 +569,86 @@ describe("approval receipts: complete() is bound to the request and single-use",
     expect(states(approvals)).toEqual(["staged", "failed"]);
   });
 
+  it("settles what was staged even if the staged intent is altered after complete() is called", async () => {
+    const { pay, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    const pending = pay.complete(staged, "approve");
+    staged._input.url = "https://evil.test/";
+    staged._requirement.amount = 9999;
+    staged._requirement.recipient_wallet = "0xattacker";
+    const intent = await pending;
+    expect(intent.status).toBe("completed");
+    expect(rail.settleCalls).toHaveLength(1);
+    expect(rail.settleCalls[0]?.input.url).toBe(input.url);
+    expect(rail.settleCalls[0]?.req.amount).toBe(4);
+    expect(rail.settleCalls[0]?.req.recipient_wallet).toBe("0xabc123");
+  });
+
+  it("settles the staged raw quote, which the hash does not cover", async () => {
+    const rail = fakeRail();
+    rail.preflight = async () => ({
+      amount: 4,
+      currency: "USDC",
+      recipient_wallet: "0xabc123",
+      network: "base-sepolia",
+      raw: { maxAmountRequired: "4000000", network: "base-sepolia", asset: "0xA" },
+    });
+    const { pay, stageHeld } = held({ rail });
+    const { staged } = await stageHeld();
+    (staged._requirement.raw as { maxAmountRequired: string }).maxAmountRequired = "999999999";
+    await pay.complete(staged, "approve");
+    expect(rail.settleCalls).toHaveLength(1);
+    const raw = rail.settleCalls[0]?.req.raw as { maxAmountRequired: string };
+    expect(raw.maxAmountRequired).toBe("4000000");
+  });
+
+  it("settles on the staged rail even if staged._railName is changed", async () => {
+    const first = fakeRail("x402");
+    const second = fakeRail("other");
+    const approvals = new MemoryApprovals();
+    const pay = blacktea({
+      source: [first, second],
+      policy: ASK,
+      history: new FakeHistory(),
+      audit: () => {},
+      approvals,
+    });
+    const res = await pay.stage({ ...input });
+    if (res.outcome !== "approval_required") throw new Error("expected approval_required");
+    res.staged._railName = "other";
+    await pay.complete(res.staged, "approve");
+    expect(first.settleCalls).toHaveLength(1);
+    expect(second.settleCalls).toHaveLength(0);
+  });
+
+  it("stage() prunes held payments more than an hour past expiry", async () => {
+    vi.useFakeTimers();
+    const { pay, approvals, rail, stageHeld } = held({
+      policy: { rules: [], default: { approval: { via: "callback", timeout_seconds: 1 } } },
+    });
+
+    // Within the hour after expiry: still known, so a late approve expires.
+    const a = await stageHeld();
+    vi.setSystemTime(Date.parse(a.staged.expires_at) + 30 * 60 * 1000);
+    await stageHeld();
+    await expect(pay.complete(a.staged, "approve")).rejects.toThrow(ApprovalTimeoutError);
+    expect(
+      approvals.records.filter((r) => r.intent_id === a.staged.intent_id).map((r) => r.state),
+    ).toEqual(["staged", "expired"]);
+
+    // More than an hour after expiry: pruned on the next stage(), no snapshot.
+    const c = await stageHeld();
+    vi.setSystemTime(Date.parse(c.staged.expires_at) + 60 * 60 * 1000 + 1000);
+    await stageHeld();
+    await expect(pay.complete(c.staged, "approve")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    expect(
+      approvals.records.filter((r) => r.intent_id === c.staged.intent_id).map((r) => r.state),
+    ).toEqual(["staged"]);
+    expect(rail.settleCalls).toHaveLength(0);
+  });
+
   it("refuses a staged intent issued by another factory", async () => {
     const { stageHeld } = held();
     const other = setup();
@@ -629,7 +709,9 @@ describe("approval receipts: complete() is bound to the request and single-use",
   it("a missing rail writes failed and consumes the approval", async () => {
     const { pay, approvals, rail, stageHeld } = held();
     const { staged } = await stageHeld();
-    staged._railName = "gone";
+    // The staged rail name is held privately, so only renaming the rail
+    // itself can make it disappear.
+    rail.name = "gone";
     await expect(pay.complete(staged, "approve")).rejects.toBeInstanceOf(NoEligibleRailError);
     expect(states(approvals)).toEqual(["staged", "failed"]);
     await expect(pay.complete(staged, "approve")).rejects.toMatchObject({

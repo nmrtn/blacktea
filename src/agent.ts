@@ -111,6 +111,11 @@ export type PayFunction = ((input: PayInput, opts?: PayOptions) => Promise<Payme
 
 const DEFAULT_IDEMPOTENCY_TTL_SECONDS = 24 * 3600;
 
+// How long after its expiry a held payment stays known to complete(): a
+// late approve in that hour gets ApprovalTimeoutError, after it
+// unknown_or_consumed.
+const STAGED_PRUNE_AFTER_MS = 60 * 60 * 1000;
+
 export function blacktea(options: BlackteaOptions): PayFunction {
   const rails: RailAdapter[] = Array.isArray(options.source) ? options.source : [options.source];
   if (rails.length === 0) {
@@ -133,11 +138,30 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       path: dryRun ? "./.blacktea/approvals-dryrun.jsonl" : "./.blacktea/approvals.jsonl",
     });
 
-  // The minted receipt for each intent stage() held and nobody has completed
-  // yet. complete() claims (removes) the entry before its first await, which
-  // makes an approval single-use; the entry's params_hash is what the
-  // approval is bound to. Not reachable from the StagedIntent object.
-  const stagedReceipts = new Map<string, ApprovalRecord>();
+  // Each payment stage() held and nobody has completed yet: the minted
+  // receipt plus private deep copies of everything complete() settles
+  // from. The StagedIntent the caller holds is only a handle; nothing read
+  // from it reaches the rail, history or the idempotency store, so editing
+  // it cannot change what gets paid. complete() claims (removes) the entry
+  // before its first await, which makes an approval single-use. stage()
+  // prunes entries more than STAGED_PRUNE_AFTER_MS past expiry.
+  type HeldPayment = {
+    record: ApprovalRecord;
+    input: PayInput;
+    requirement: PaymentRequirement;
+    opts: PayOptions;
+    railName: string;
+    idempotencyKey: string;
+  };
+  const stagedReceipts = new Map<string, HeldPayment>();
+
+  function pruneStaged(): void {
+    const cutoff = Date.now() - STAGED_PRUNE_AFTER_MS;
+    for (const [intentId, held] of stagedReceipts) {
+      const expiresAtMs = Date.parse(held.record.expires_at);
+      if (Number.isFinite(expiresAtMs) && expiresAtMs < cutoff) stagedReceipts.delete(intentId);
+    }
+  }
 
   // complete() calls in progress, by intent_id. A concurrent duplicate
   // approve shares the first call's promise, so exactly one approved and
@@ -550,6 +574,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   // ---------- two-phase: stage ----------
 
   async function stage(input: PayInput, opts: PayOptions = {}): Promise<StageResult> {
+    pruneStaged();
     const prep = await prepare(input, opts);
     if (prep.kind === "cached") return { outcome: "completed", intent: prep.intent };
     if (prep.kind === "rejected") {
@@ -588,8 +613,19 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         ruleFired: decision.rule_fired,
         expiresAt,
       });
+      // Copied right after minting (no await in between), so the copies are
+      // exactly what params_hash describes. The StagedIntent above keeps the
+      // caller's objects and shares no references with them.
+      const held: HeldPayment = {
+        record,
+        input: structuredClone(input),
+        requirement: structuredClone(requirement),
+        opts: structuredClone(opts),
+        railName: rail.name,
+        idempotencyKey,
+      };
       await writeReceipt(record);
-      stagedReceipts.set(intentId, record);
+      stagedReceipts.set(intentId, held);
       emit(audit, "approval_staged", intentId, {
         amount: requirement.amount,
         currency: requirement.currency,
@@ -631,13 +667,13 @@ export function blacktea(options: BlackteaOptions): PayFunction {
 
     // Never staged by this factory, or already completed: refuse without a
     // receipt snapshot or a rail call.
-    const record = stagedReceipts.get(intentId);
-    if (!record) {
+    const held = stagedReceipts.get(intentId);
+    if (!held) {
       return Promise.reject(new ApprovalInvalidError(intentId, "unknown_or_consumed"));
     }
     stagedReceipts.delete(intentId);
 
-    const promise = resolveStaged(staged, decision, record);
+    const promise = resolveStaged(staged, decision, held);
     completing.set(intentId, { decision, promise });
     const release = () => {
       completing.delete(intentId);
@@ -651,18 +687,20 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   async function resolveStaged(
     staged: StagedIntent,
     decision: "approve" | "reject",
-    record: ApprovalRecord,
+    held: HeldPayment,
   ): Promise<PaymentIntent> {
+    const { record, input, requirement } = held;
+    const intentId = record.intent_id;
     if (decision === "reject") {
       // A late reject is still a reject. The payment was never going to
       // settle anyway, so we accept it without checking expiry.
       await advanceReceipt(record, "denied");
-      emit(audit, "approval_received", staged.intent_id, { decision: "deny" });
-      emit(audit, "payment_denied", staged.intent_id, {
+      emit(audit, "approval_received", intentId, { decision: "deny" });
+      emit(audit, "payment_denied", intentId, {
         reason: "approval_denied",
-        rule_fired: staged.rule_fired,
+        rule_fired: record.rule_fired,
       });
-      return makeDeniedIntent(staged);
+      return makeDeniedIntent(intentId, input, record.rule_fired);
     }
 
     // Approve path. Refuse if the policy's approval window has elapsed: a
@@ -673,16 +711,17 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     const expiresAtMs = Date.parse(record.expires_at);
     if (Number.isFinite(expiresAtMs) && Date.now() > expiresAtMs) {
       await advanceReceipt(record, "expired");
-      emit(audit, "approval_timed_out", staged.intent_id, {
+      emit(audit, "approval_timed_out", intentId, {
         expires_at: record.expires_at,
       });
-      throw new ApprovalTimeoutError(staged.intent_id);
+      throw new ApprovalTimeoutError(intentId);
     }
 
-    emit(audit, "approval_received", staged.intent_id, { decision: "approve" });
+    emit(audit, "approval_received", intentId, { decision: "approve" });
 
-    // The approval covers the request the human saw. Recompute the hash
-    // from what is about to be settled; any change since staging refuses.
+    // The approval covers the request the human saw. The settle below uses
+    // only the private copies, so this check on the caller's staged object
+    // is about refusing loudly: an altered handle means something is wrong.
     // A request that can no longer be hashed has changed too.
     let actual: string | null;
     try {
@@ -692,39 +731,38 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     }
     if (actual !== record.params_hash) {
       await advanceReceipt(record, "failed");
-      emit(audit, "approval_mismatch", staged.intent_id, {
+      emit(audit, "approval_mismatch", intentId, {
         expected: record.params_hash,
         actual,
       });
-      throw new ApprovalInvalidError(staged.intent_id, "params_changed");
+      throw new ApprovalInvalidError(intentId, "params_changed");
     }
 
-    const rail = rails.find((r) => r.name === staged._railName);
+    // Nothing read from `staged` past this point.
+    const rail = rails.find((r) => r.name === held.railName);
     if (!rail) {
       await advanceReceipt(record, "failed");
-      throw new NoEligibleRailError([staged._railName]);
+      throw new NoEligibleRailError([held.railName]);
     }
 
     const policyInput: PaymentIntentInput = {
-      amount: staged._requirement.amount,
-      currency: staged._requirement.currency,
-      url: staged._input.url,
-      intent: staged._input.intent,
-      ...(staged._requirement.recipient_wallet
-        ? { recipient_wallet: staged._requirement.recipient_wallet }
-        : {}),
+      amount: requirement.amount,
+      currency: requirement.currency,
+      url: input.url,
+      intent: input.intent,
+      ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
     };
 
     return settleWithReceipt(
       {
-        intentId: staged.intent_id,
-        idempotencyKey: staged._idempotencyKey,
+        intentId,
+        idempotencyKey: held.idempotencyKey,
         rail,
-        requirement: staged._requirement,
+        requirement,
         policyInput,
-        ruleFired: staged.rule_fired,
-        input: staged._input,
-        opts: staged._opts,
+        ruleFired: record.rule_fired,
+        input,
+        opts: held.opts,
       },
       record,
     );
@@ -945,12 +983,12 @@ function makeTerminalIntent(
   return intent;
 }
 
-function makeDeniedIntent(staged: StagedIntent): PaymentIntent {
+function makeDeniedIntent(intentId: string, input: PayInput, ruleFired: string): PaymentIntent {
   const intent: PaymentIntent = {
-    id: staged.intent_id,
+    id: intentId,
     status: "denied",
-    input: staged._input,
-    error: new PolicyDeniedError("approval_denied", staged.rule_fired),
+    input,
+    error: new PolicyDeniedError("approval_denied", ruleFired),
     onStatusChange(cb) {
       queueMicrotask(() => cb(intent));
       return () => {};
