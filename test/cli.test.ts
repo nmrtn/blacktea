@@ -8,8 +8,10 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 
 const REPO_ROOT = process.cwd();
 const CLI_ENTRY = join(REPO_ROOT, "src/cli.ts");
@@ -261,6 +263,98 @@ describe("CLI", () => {
       expect(result.status).toBe(2);
       const err = JSON.parse(result.stderr ?? "");
       expect(err.error.code).toBe("config_error");
+    });
+  });
+
+  describe("approvals show", () => {
+    const dir = mkdtempSync(join(tmpdir(), "blacktea-cli-"));
+    afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+    const base = {
+      channel: "callback",
+      mcp_server: null,
+      tool: null,
+      actor: null,
+      amount: 5,
+      currency: "USDC",
+      recipient_wallet: "0xabc",
+      recipient_url: "https://x.com/a",
+      intent: "buy data",
+      rule_fired: "r1",
+      decision_reason: null,
+      params_hash: "sha256:jcs-v1:00",
+      created_at: "2026-01-01T00:00:00.000Z",
+    };
+    const file = join(dir, "approvals.jsonl");
+    writeFileSync(
+      file,
+      `${[
+        JSON.stringify({
+          ...base,
+          intent_id: "a",
+          state: "staged",
+          trigger: "refund ticket 42",
+          updated_at: "2026-01-01T00:00:01.000Z",
+          expires_at: "2099-01-01T00:00:00.000Z",
+        }),
+        JSON.stringify({
+          ...base,
+          intent_id: "a",
+          state: "settled",
+          trigger: "refund ticket 42",
+          updated_at: "2026-01-01T00:00:05.000Z",
+          expires_at: "2099-01-01T00:00:00.000Z",
+        }),
+        JSON.stringify({
+          ...base,
+          intent_id: "b",
+          state: "staged",
+          trigger: null,
+          updated_at: "2026-01-01T00:00:03.000Z",
+          expires_at: "2026-01-01T00:10:00.000Z",
+        }),
+        "not json",
+      ].join("\n")}\n`,
+    );
+
+    it("pay --help lists --trigger", () => {
+      const r = runCli(["pay", "--help"]);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("--trigger");
+    });
+
+    it("--json prints one line per latest record, with display_state for expired", () => {
+      const r = runCli(["approvals", "show", "--store", file, "--json"]);
+      expect(r.status).toBe(0);
+      const rows = r.stdout
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
+      expect(rows).toHaveLength(2);
+      const a = rows.find((x) => x.intent_id === "a");
+      const b = rows.find((x) => x.intent_id === "b");
+      expect(a.state).toBe("settled");
+      expect(b.state).toBe("staged");
+      expect(b.display_state).toBe("expired (unresolved)");
+    });
+
+    it("table shows state, expired label and trigger", () => {
+      const r = runCli(["approvals", "show", "--store", file]);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("settled");
+      expect(r.stdout).toContain("expired (unresolved)");
+      expect(r.stdout).toContain("refund ticket 42");
+    });
+
+    it("exits 0 on a missing file", () => {
+      const r = runCli(["approvals", "show", "--store", join(dir, "missing.jsonl")]);
+      expect(r.status).toBe(0);
+    });
+
+    it("-n limits rows", () => {
+      const r = runCli(["approvals", "show", "--store", file, "--json", "-n", "1"]);
+      expect(r.status).toBe(0);
+      expect(r.stdout.trim().split("\n")).toHaveLength(1);
     });
   });
 });
