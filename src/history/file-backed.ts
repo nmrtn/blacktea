@@ -20,6 +20,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { hostOf } from "../host.js";
 import type { HistoryFilter, HistoryRecord, HistoryStore } from "../types.js";
 
 export interface FileBackedHistoryOptions {
@@ -113,6 +114,9 @@ export class FileBackedHistoryStore implements HistoryStore {
 function matchesFilter(event: HistoryRecord, filter: HistoryFilter | undefined): boolean {
   if (!filter) return true;
   if (filter.wallet && event.recipient_wallet !== filter.wallet) return false;
-  if (filter.url && event.recipient_url !== filter.url) return false;
+  // filter.url is a host; records hold the full request URL.
+  if (filter.url && (!event.recipient_url || hostOf(event.recipient_url) !== filter.url)) {
+    return false;
+  }
   return true;
 }

@@ -3,6 +3,7 @@
  * network.
  */
 
+import { hostOf } from "../../src/host.js";
 import type {
   AuditEvent,
   HistoryFilter,
@@ -37,7 +38,7 @@ export class FakeHistory implements HistoryStore {
 function match(e: HistoryRecord, filter: HistoryFilter | undefined): boolean {
   if (!filter) return true;
   if (filter.wallet && e.recipient_wallet !== filter.wallet) return false;
-  if (filter.url && e.recipient_url !== filter.url) return false;
+  if (filter.url && (!e.recipient_url || hostOf(e.recipient_url) !== filter.url)) return false;
   return true;
 }
 

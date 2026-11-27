@@ -8,6 +8,20 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
+## Unreleased
+
+### Security
+
+- **Per-URL limits now count past payments.** `would_spend` and the other
+  history operators with `by: "url"` asked history for the URL's host, but
+  history records hold the full request URL and the two were compared
+  exactly, so nothing ever matched: only the current payment was measured
+  against the limit. The file-backed store now compares the host of each
+  recorded URL. Existing history files need no change. Custom
+  `HistoryStore` implementations should match `filter.url` the same way.
+
+---
+
 ## `@nmrtn/blacktea-mcp` v0.1.4 - 2026-11-27
 
 Approval receipts and the `trigger` input for the MCP server. Requires
