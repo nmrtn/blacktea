@@ -911,13 +911,18 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         audit: audit.sink,
       });
 
-      const result = await pay.stage(baseInput);
-      if (result.outcome !== "approval_required") throw new Error("expected approval_required");
+      vi.useFakeTimers();
+      try {
+        const result = await pay.stage(baseInput);
+        if (result.outcome !== "approval_required") throw new Error("expected approval_required");
 
-      // Force expiry without sleeping: mutate the staged intent into the past.
-      const expired = { ...result.staged, expires_at: "1970-01-01T00:00:00.000Z" };
+        // Force expiry without sleeping: move the clock past the minted window.
+        vi.setSystemTime(Date.parse(result.staged.expires_at) + 1000);
 
-      await expect(pay.complete(expired, "approve")).rejects.toThrow(ApprovalTimeoutError);
+        await expect(pay.complete(result.staged, "approve")).rejects.toThrow(ApprovalTimeoutError);
+      } finally {
+        vi.useRealTimers();
+      }
       // Nothing settled, nothing recorded.
       expect(rail.settleCalls).toHaveLength(0);
       expect(history.events).toHaveLength(0);
@@ -941,12 +946,17 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         audit: () => {},
       });
 
-      const result = await pay.stage(baseInput);
-      if (result.outcome !== "approval_required") throw new Error("expected approval_required");
-      const expired = { ...result.staged, expires_at: "1970-01-01T00:00:00.000Z" };
+      vi.useFakeTimers();
+      try {
+        const result = await pay.stage(baseInput);
+        if (result.outcome !== "approval_required") throw new Error("expected approval_required");
+        vi.setSystemTime(Date.parse(result.staged.expires_at) + 1000);
 
-      const intent = await pay.complete(expired, "reject");
-      expect(intent.status).toBe("denied");
+        const intent = await pay.complete(result.staged, "reject");
+        expect(intent.status).toBe("denied");
+      } finally {
+        vi.useRealTimers();
+      }
       expect(rail.settleCalls).toHaveLength(0);
     });
   });

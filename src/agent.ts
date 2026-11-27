@@ -668,11 +668,13 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     // Approve path. Refuse if the policy's approval window has elapsed: a
     // stage past expires_at must not become a payment, otherwise the
     // policy's timeout_seconds is meaningless on the two-phase / MCP path.
-    const expiresAtMs = Date.parse(staged.expires_at);
+    // The window is the minted one: staged.expires_at is caller-held and
+    // could be moved.
+    const expiresAtMs = Date.parse(record.expires_at);
     if (Number.isFinite(expiresAtMs) && Date.now() > expiresAtMs) {
       await advanceReceipt(record, "expired");
       emit(audit, "approval_timed_out", staged.intent_id, {
-        expires_at: staged.expires_at,
+        expires_at: record.expires_at,
       });
       throw new ApprovalTimeoutError(staged.intent_id);
     }

@@ -451,7 +451,8 @@ describe("approval receipts: complete() is bound to the request and single-use",
   function held(opts: Parameters<typeof setup>[0] = {}) {
     const ctx = setup(opts);
     const stageHeld = async () => {
-      const res = await ctx.pay.stage(input);
+      // A copy: tests alter staged._input, which is the object passed in.
+      const res = await ctx.pay.stage({ ...input });
       if (res.outcome !== "approval_required") throw new Error("expected approval_required");
       return { staged: res.staged };
     };
@@ -536,6 +537,36 @@ describe("approval receipts: complete() is bound to the request and single-use",
       reason: "unknown_or_consumed",
     });
     expect(rail.settleCalls).toHaveLength(0);
+  });
+
+  it("checks expiry against the minted window, not the caller-held expires_at", async () => {
+    vi.useFakeTimers();
+    const { pay, approvals, audit, rail, stageHeld } = held({
+      policy: { rules: [], default: { approval: { via: "callback", timeout_seconds: 1 } } },
+    });
+    const { staged } = await stageHeld();
+    const minted = staged.expires_at;
+    staged.expires_at = "2999-01-01T00:00:00.000Z";
+    vi.setSystemTime(Date.parse(minted) + 1000);
+    await expect(pay.complete(staged, "approve")).rejects.toThrow(ApprovalTimeoutError);
+    expect(states(approvals)).toEqual(["staged", "expired"]);
+    expect(rail.settleCalls).toHaveLength(0);
+    const timedOut = audit.find((e) => e.event === "approval_timed_out");
+    expect(timedOut?.data.expires_at).toBe(minted);
+  });
+
+  it("refuses an altered request that can no longer be hashed", async () => {
+    const { pay, approvals, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    const body: Record<string, unknown> = {};
+    body.self = body;
+    staged._input.body = body;
+    const err = await pay.complete(staged, "approve").catch((e) => e);
+    expect(err).toBeInstanceOf(ApprovalInvalidError);
+    expect(err).toMatchObject({ reason: "params_changed" });
+    expect(rail.settleCalls).toHaveLength(0);
+    expect(states(approvals).at(-1)).toBe("failed");
+    expect(states(approvals)).toEqual(["staged", "failed"]);
   });
 
   it("refuses a staged intent issued by another factory", async () => {
