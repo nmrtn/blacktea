@@ -113,7 +113,11 @@ export class FileBackedHistoryStore implements HistoryStore {
 
 function matchesFilter(event: HistoryRecord, filter: HistoryFilter | undefined): boolean {
   if (!filter) return true;
-  if (filter.wallet && event.recipient_wallet !== filter.wallet) return false;
+  // Letter case is ignored, as in the policy's wallet_in: a payee must not
+  // escape a per-wallet limit by changing the casing of its address.
+  if (filter.wallet && event.recipient_wallet?.toLowerCase() !== filter.wallet.toLowerCase()) {
+    return false;
+  }
   // filter.url is a host; records hold the full request URL.
   if (filter.url && (!event.recipient_url || hostOf(event.recipient_url) !== filter.url)) {
     return false;

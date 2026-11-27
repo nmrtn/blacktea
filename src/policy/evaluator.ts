@@ -123,7 +123,9 @@ function matchWalletIn(list: string | string[], walletFromInput: string | undefi
     );
   }
   if (!walletFromInput) return false;
-  return list.includes(walletFromInput);
+  // Case-insensitive: the payee chooses the casing in its quote.
+  const wallet = walletFromInput.toLowerCase();
+  return list.some((entry) => entry.toLowerCase() === wallet);
 }
 
 function intentContainsAny(intent: string, needles: string[]): boolean {

@@ -12,6 +12,12 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ### Security
 
+- **Wallet addresses are compared ignoring letter case.** The `wallet_in`
+  operator and the per-wallet history filter (`would_spend` and similar with
+  `by: "wallet"`) compared addresses exactly, so a payee could step around a
+  blocklist entry or a per-wallet limit by quoting the same address in a
+  different casing. Custom `HistoryStore` implementations should match
+  `filter.wallet` the same way.
 - **Per-URL limits now count past payments.** `would_spend` and the other
   history operators with `by: "url"` asked history for the URL's host, but
   history records hold the full request URL and the two were compared

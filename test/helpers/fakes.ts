@@ -37,7 +37,9 @@ export class FakeHistory implements HistoryStore {
 
 function match(e: HistoryRecord, filter: HistoryFilter | undefined): boolean {
   if (!filter) return true;
-  if (filter.wallet && e.recipient_wallet !== filter.wallet) return false;
+  if (filter.wallet && e.recipient_wallet?.toLowerCase() !== filter.wallet.toLowerCase()) {
+    return false;
+  }
   if (filter.url && (!e.recipient_url || hostOf(e.recipient_url) !== filter.url)) return false;
   return true;
 }

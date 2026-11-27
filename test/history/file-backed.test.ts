@@ -92,6 +92,15 @@ describe("FileBackedHistoryStore", () => {
       expect(got).toBe(40);
     });
 
+    it("filters by wallet ignoring letter case", async () => {
+      const store = new FileBackedHistoryStore({ path });
+      await store.record(recordAt(0, { amount: 10, recipient_wallet: "0xAbCd" }));
+      await store.record(recordAt(0, { amount: 20, recipient_wallet: "0xabcd" }));
+      await store.record(recordAt(0, { amount: 30, recipient_wallet: "0xOther" }));
+      expect(await store.sumSince({ seconds: 60, filter: { wallet: "0xABCD" } })).toBe(30);
+      expect(await store.countSince({ seconds: 60, filter: { wallet: "0xabcd" } })).toBe(2);
+    });
+
     // filter.url is a host (what the policy evaluator passes); records hold
     // the full request URL (what the rail's receipt carries).
     it("filters by host against records that hold full URLs", async () => {

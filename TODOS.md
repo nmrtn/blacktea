@@ -17,16 +17,6 @@ Code: `src/rails/x402.ts` (the `settle` catch and the non-OK branch),
 accepted a quote, throw a distinct error that says the payment may have
 been paid, and record it to history conservatively.
 
-### Normalize EVM address casing in preflight, wallet_in and history filters
-
-From the same review. The x402 selector accepts a payee that differs only
-in letter case, and the receipt now keeps the approved casing, but the
-history filter (`src/history/file-backed.ts`) and the policy `wallet_in`
-operator (`src/policy/evaluator.ts`) still compare addresses exactly. A
-policy written with checksummed addresses can miss a lowercase quote.
-Direction: normalize addresses once at preflight and compare
-case-insensitively in both places.
-
 ## Publishing discipline
 
 Publishing `@nmrtn/blacktea` 0.1.5 is unblocked. It is a manual step
