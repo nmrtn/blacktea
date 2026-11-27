@@ -455,6 +455,18 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     const { intentId, idempotencyKey, rail, requirement, policyInput, ruleFired, input, opts } =
       args;
 
+    // Re-checked here because an approval can sit between prepare()'s cache
+    // check and this point: another payment with the same key may have
+    // settled meanwhile. settleOnce() covers only calls that overlap here.
+    const cached = await idempotency.get(idempotencyKey);
+    if (cached) {
+      emit(audit, "idempotency_hit", intentId, {
+        idempotency_key: idempotencyKey,
+        original_receipt_id: cached.id,
+      });
+      return makeTerminalIntent(intentId, input, "completed", cached, undefined);
+    }
+
     let receipt: Receipt;
     let data: unknown;
     if (dryRun) {
@@ -514,18 +526,19 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     if (prep.kind === "rejected") throw new PolicyDeniedError(prep.reason, prep.ruleFired);
 
     const { intentId, idempotencyKey, rail, requirement, policyInput, decision } = prep;
-    const settleArgs: SettleArgs = {
-      intentId,
-      idempotencyKey,
-      rail,
-      requirement,
-      policyInput,
-      ruleFired: decision.rule_fired,
-      input,
-      opts,
-    };
 
-    if (decision.kind !== "approval") return settleAndRecord(settleArgs);
+    if (decision.kind !== "approval") {
+      return settleAndRecord({
+        intentId,
+        idempotencyKey,
+        rail,
+        requirement,
+        policyInput,
+        ruleFired: decision.rule_fired,
+        input,
+        opts,
+      });
+    }
 
     if (decision.channel === "callback" && !onApprovalNeeded) {
       throw new ValidationError(
@@ -543,17 +556,37 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       ruleFired: decision.rule_fired,
       expiresAt,
     });
+    // Copied right after minting (no await in between), as stage() does:
+    // the settle below reads only these copies, so whatever the approval
+    // callback does to the caller's objects cannot change what gets paid.
+    const copies = privateCopies(input, requirement, opts);
+    const settleArgs: SettleArgs = {
+      intentId,
+      idempotencyKey,
+      rail,
+      requirement: copies.requirement,
+      policyInput,
+      ruleFired: decision.rule_fired,
+      input: copies.input,
+      opts: copies.opts,
+    };
     await writeReceipt(record);
 
-    const ok = await runApprovalFlow({
-      intentId,
-      policyInput,
-      trigger: input.trigger,
-      decision,
-      expiresAt,
-      onApprovalNeeded,
-      audit,
-    });
+    let ok: ApprovalOutcome;
+    try {
+      ok = await runApprovalFlow({
+        intentId,
+        policyInput,
+        trigger: input.trigger,
+        decision,
+        expiresAt,
+        onApprovalNeeded,
+        audit,
+      });
+    } catch (err) {
+      await advanceReceipt(record, "denied", "approval_channel_error");
+      throw err;
+    }
     if (!ok.approved) {
       if (ok.timed_out) {
         await advanceReceipt(record, "expired");
@@ -618,9 +651,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       // caller's objects and shares no references with them.
       const held: HeldPayment = {
         record,
-        input: structuredClone(input),
-        requirement: structuredClone(requirement),
-        opts: structuredClone(opts),
+        ...privateCopies(input, requirement, opts),
         railName: rail.name,
         idempotencyKey,
       };
@@ -656,6 +687,16 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   // both claim it.
   function complete(staged: StagedIntent, decision: "approve" | "reject"): Promise<PaymentIntent> {
     const intentId = staged.intent_id;
+
+    // Checked before the claim, so a bad argument leaves the held payment
+    // usable.
+    if (decision !== "approve" && decision !== "reject") {
+      return Promise.reject(
+        new ValidationError(
+          `Invalid decision: ${String(decision)}. Must be "approve" or "reject".`,
+        ),
+      );
+    }
 
     // A concurrent duplicate of a call in progress shares its result. A
     // different decision racing it is refused: the approval is taken.
@@ -796,6 +837,30 @@ function validateInput(input: PayInput): void {
   }
 }
 
+// ---------- private copies ----------
+
+/**
+ * Deep copies of what a held payment settles from. The body is copied
+ * through JSON, the form computeParamsHash hashes and the rail sends, so a
+ * Date or a toJSON object is held as hashed and a non-cloneable value
+ * (a function member) cannot throw. Call only after computeParamsHash has
+ * accepted the body.
+ */
+function privateCopies(
+  input: PayInput,
+  requirement: PaymentRequirement,
+  opts: PayOptions,
+): { input: PayInput; requirement: PaymentRequirement; opts: PayOptions } {
+  const { body, ...rest } = input;
+  const inputCopy: PayInput = structuredClone(rest);
+  if (body !== undefined) inputCopy.body = JSON.parse(JSON.stringify(body));
+  return {
+    input: inputCopy,
+    requirement: structuredClone(requirement),
+    opts: structuredClone(opts),
+  };
+}
+
 // ---------- rail selection ----------
 
 function pickRail(
@@ -882,15 +947,21 @@ async function runApprovalFlow(args: {
   if (result.kind === "timeout") {
     return { approved: false, timed_out: true };
   }
-  if (result.d.decision === "approve") {
+  // The callback is customer code: anything but a clear approve or deny is
+  // a denial.
+  const d = result.d as { decision?: unknown; reason?: string } | null | undefined;
+  if (d?.decision === "approve") {
     emit(audit, "approval_received", intentId, { decision: "approve" });
     return { approved: true };
   }
+  if (d?.decision !== "deny") {
+    return { approved: false, reason: "approval_channel_error" };
+  }
   emit(audit, "approval_received", intentId, {
     decision: "deny",
-    reason: result.d.reason,
+    reason: d.reason,
   });
-  return { approved: false, reason: result.d.reason };
+  return { approved: false, reason: d.reason };
 }
 
 async function awaitConsoleApproval(args: {
@@ -902,7 +973,7 @@ async function awaitConsoleApproval(args: {
   trigger: string | undefined;
   timeoutMs: number;
 }): Promise<ApprovalOutcome> {
-  // intent and trigger come from the agent: strip control characters so
+  // url, intent and trigger come from the agent: strip control characters so
   // they cannot forge extra prompt lines or terminal sequences.
   const triggerLine =
     args.trigger !== undefined ? `\n  trigger:   ${sanitizeForDisplay(args.trigger)}` : "";
@@ -910,7 +981,7 @@ async function awaitConsoleApproval(args: {
   console.log(`
 [blacktea] Approval required for payment ${args.intentId}
   amount:    ${args.amount} ${args.currency}
-  recipient: ${args.url}
+  recipient: ${sanitizeForDisplay(args.url)}
   reason:    ${sanitizeForDisplay(args.intent)}${triggerLine}
 `);
 

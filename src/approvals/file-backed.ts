@@ -28,8 +28,9 @@ export class FileBackedApprovalStore implements ApprovalStore {
   }
 
   /**
-   * Latest snapshot per intent_id, newest updated_at first. Missing file
-   * yields []. Unparseable lines are skipped.
+   * Latest snapshot per intent_id, newest updated_at first, file order on
+   * ties. Missing file yields []. Unparseable lines, and lines without a
+   * string intent_id and updated_at, are skipped.
    */
   static readLatest(path: string): ApprovalRecord[] {
     const file = resolve(path);
@@ -43,10 +44,12 @@ export class FileBackedApprovalStore implements ApprovalStore {
       } catch {
         continue;
       }
-      if (typeof rec?.intent_id !== "string") continue;
+      if (typeof rec?.intent_id !== "string" || typeof rec.updated_at !== "string") continue;
       const prev = latest.get(rec.intent_id);
       if (!prev || rec.updated_at >= prev.updated_at) latest.set(rec.intent_id, rec);
     }
-    return [...latest.values()].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+    return [...latest.values()].sort((a, b) =>
+      a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0,
+    );
   }
 }

@@ -19,6 +19,15 @@ describe("canonicalize", () => {
 });
 
 describe("computeParamsHash", () => {
+  // Known answer. Receipts already on disk carry hashes in this format;
+  // changing this value means old receipts no longer verify. Bump the
+  // "jcs-v1" tag instead of editing the expected string.
+  it("matches the golden vector", () => {
+    expect(computeParamsHash(input, req)).toBe(
+      "sha256:jcs-v1:45dd1e70241e139efd92e37663646d868ad7eea22e0bcec003715ce14f4d46bc",
+    );
+  });
+
   it("has the tagged format", () => {
     expect(computeParamsHash(input, req)).toMatch(/^sha256:jcs-v1:[0-9a-f]{64}$/);
   });

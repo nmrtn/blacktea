@@ -73,6 +73,26 @@ describe("FileBackedApprovalStore", () => {
     ]);
   });
 
+  it("readLatest skips records without a string intent_id and updated_at", async () => {
+    const p = join(dir, "approvals.jsonl");
+    const store = new FileBackedApprovalStore({ path: p });
+    await store.append(rec({ intent_id: "a", updated_at: "2026-01-01T00:00:00Z" }));
+    writeFileSync(
+      p,
+      `${readFileSync(p, "utf-8")}{"intent_id":"x"}\n{"intent_id":"y","updated_at":5}\n{"updated_at":"2026-01-02T00:00:00Z"}\nnull\n`,
+    );
+    expect(FileBackedApprovalStore.readLatest(p).map((r) => r.intent_id)).toEqual(["a"]);
+  });
+
+  it("readLatest keeps file order for records with the same updated_at", async () => {
+    const p = join(dir, "approvals.jsonl");
+    const store = new FileBackedApprovalStore({ path: p });
+    for (const id of ["a", "b", "c"]) {
+      await store.append(rec({ intent_id: id, updated_at: "2026-01-01T00:00:00Z" }));
+    }
+    expect(FileBackedApprovalStore.readLatest(p).map((r) => r.intent_id)).toEqual(["a", "b", "c"]);
+  });
+
   it("readLatest returns [] when the file does not exist", () => {
     expect(FileBackedApprovalStore.readLatest(join(dir, "none.jsonl"))).toEqual([]);
   });

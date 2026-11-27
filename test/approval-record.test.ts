@@ -14,6 +14,7 @@ import {
   ApprovalInvalidError,
   ApprovalTimeoutError,
   NoEligibleRailError,
+  PolicyDeniedError,
   QuoteChangedError,
   RailUnavailableError,
   ValidationError,
@@ -742,5 +743,156 @@ describe("approval receipts: console channel", () => {
     expect(prompt?.split("\n").filter((l) => l.includes("Approve?"))).toHaveLength(1);
     expect(states(approvals)).toEqual(["staged", "approved", "settled"]);
     expect(approvals.records[0]?.channel).toBe("console");
+  });
+
+  it("strips control characters from the recipient url", async () => {
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+    const { pay } = setup({ policy: { rules: [], default: { approval: "console" } } });
+
+    await pay({ ...input, url: "https://api.example.com/x\n  amount:    0.01 USDC\x1b[2K" });
+
+    const prompt = logged.find((l) => l.includes("Approval required"));
+    expect(prompt).toBeDefined();
+    expect(prompt).not.toContain("\x1b");
+    const recipientLine = prompt?.split("\n").find((l) => l.includes("recipient:"));
+    expect(recipientLine).toContain("amount:    0.01 USDC");
+    expect(prompt?.split("\n").filter((l) => l.trimStart().startsWith("amount:"))).toHaveLength(1);
+  });
+});
+
+describe("approval receipts: settle uses private copies", () => {
+  it("pay() settles the request as it was approved, not as the callback left it", async () => {
+    const live: PayInput = { ...input, method: "POST", body: { q: 1 } };
+    const { pay, rail, approvals } = setup({
+      onApprovalNeeded: async () => {
+        live.url = "https://evil.test/";
+        (live.body as { q: number }).q = 999;
+        return { decision: "approve" };
+      },
+    });
+    const intent = await pay(live);
+    expect(intent.status).toBe("completed");
+    expect(rail.settleCalls).toHaveLength(1);
+    expect(rail.settleCalls[0]?.input.url).toBe(input.url);
+    expect(rail.settleCalls[0]?.input.body).toEqual({ q: 1 });
+    expect(approvals.records.every((r) => r.recipient_url === input.url)).toBe(true);
+  });
+
+  it("stage() holds the body in its JSON form, so a Date settles as hashed", async () => {
+    const { pay, rail } = setup();
+    const when = new Date("2026-01-02T03:04:05.000Z");
+    const res = await pay.stage({ ...input, method: "POST", body: { when } });
+    if (res.outcome !== "approval_required") throw new Error("expected approval_required");
+    const intent = await pay.complete(res.staged, "approve");
+    expect(intent.status).toBe("completed");
+    expect(rail.settleCalls[0]?.input.body).toEqual({ when: "2026-01-02T03:04:05.000Z" });
+  });
+
+  it("pay() settles the body in its JSON form", async () => {
+    const { pay, rail } = setup();
+    const when = new Date("2026-01-02T03:04:05.000Z");
+    await pay({ ...input, method: "POST", body: { when } });
+    expect(rail.settleCalls[0]?.input.body).toEqual({ when: "2026-01-02T03:04:05.000Z" });
+  });
+
+  it("stage() accepts a body structuredClone cannot copy", async () => {
+    const { pay, rail } = setup();
+    const res = await pay.stage({ ...input, method: "POST", body: { n: 1, f: () => 1 } });
+    if (res.outcome !== "approval_required") throw new Error("expected approval_required");
+    await pay.complete(res.staged, "approve");
+    expect(rail.settleCalls[0]?.input.body).toEqual({ n: 1 });
+  });
+});
+
+describe("approval receipts: one idempotency key settles once", () => {
+  it("two stage() with one key, both approved in sequence, settle once", async () => {
+    const { pay, rail, approvals } = setup();
+    const a = await pay.stage({ ...input }, { idempotency_key: "k1" });
+    const b = await pay.stage({ ...input }, { idempotency_key: "k1" });
+    if (a.outcome !== "approval_required" || b.outcome !== "approval_required") {
+      throw new Error("expected approval_required");
+    }
+    const first = await pay.complete(a.staged, "approve");
+    const second = await pay.complete(b.staged, "approve");
+    expect(rail.settleCalls).toHaveLength(1);
+    expect(second.receipt?.id).toBe(first.receipt?.id);
+    const ofB = approvals.records.filter((r) => r.intent_id === b.staged.intent_id);
+    expect(ofB.map((r) => r.state)).toEqual(["staged", "approved", "settled"]);
+  });
+
+  it("two overlapping pay() with one key under a callback approval settle once", async () => {
+    const decide: Array<(d: { decision: "approve" }) => void> = [];
+    const { pay, rail } = setup({
+      onApprovalNeeded: () => new Promise((resolve) => decide.push(resolve)),
+    });
+    const p1 = pay({ ...input }, { idempotency_key: "k2" });
+    const p2 = pay({ ...input }, { idempotency_key: "k2" });
+    await vi.waitFor(() => expect(decide).toHaveLength(2));
+    decide[0]?.({ decision: "approve" });
+    const a = await p1;
+    decide[1]?.({ decision: "approve" });
+    const b = await p2;
+    expect(rail.settleCalls).toHaveLength(1);
+    expect(b.receipt?.id).toBe(a.receipt?.id);
+  });
+});
+
+describe("approval receipts: complete() argument and write checks", () => {
+  it("refuses a decision other than approve or reject without consuming the approval", async () => {
+    const { pay, rail, approvals } = setup();
+    const res = await pay.stage({ ...input });
+    if (res.outcome !== "approval_required") throw new Error("expected approval_required");
+    await expect(pay.complete(res.staged, "deny" as never)).rejects.toBeInstanceOf(ValidationError);
+    expect(rail.settleCalls).toHaveLength(0);
+    const intent = await pay.complete(res.staged, "reject");
+    expect(intent.status).toBe("denied");
+    expect(states(approvals)).toEqual(["staged", "denied"]);
+  });
+
+  it("a failed approved write blocks the settle and consumes the approval", async () => {
+    const { pay, rail, approvals } = setup();
+    const res = await pay.stage({ ...input });
+    if (res.outcome !== "approval_required") throw new Error("expected approval_required");
+    approvals.failOn = ["approved"];
+    await expect(pay.complete(res.staged, "approve")).rejects.toThrow("disk full");
+    expect(rail.settleCalls).toHaveLength(0);
+    await expect(pay.complete(res.staged, "approve")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    expect(rail.settleCalls).toHaveLength(0);
+  });
+});
+
+describe("approval receipts: a broken approval channel", () => {
+  it("a throwing onApprovalNeeded writes denied and rethrows the original error", async () => {
+    const boom = new Error("slack down");
+    const { pay, rail, approvals } = setup({
+      onApprovalNeeded: async () => {
+        throw boom;
+      },
+    });
+    const err = await pay(input).catch((e) => e);
+    expect(err).toBe(boom);
+    expect(states(approvals)).toEqual(["staged", "denied"]);
+    expect(approvals.records.at(-1)?.decision_reason).toBe("approval_channel_error");
+    expect(rail.settleCalls).toHaveLength(0);
+  });
+
+  it.each([
+    ["an unknown decision", { decision: "yes" }],
+    ["no result", undefined],
+  ])("%s from onApprovalNeeded is a denial", async (_n, result) => {
+    const { pay, rail, approvals } = setup({
+      onApprovalNeeded: async () => result as never,
+    });
+    const err = await pay(input).catch((e) => e);
+    expect(err).toBeInstanceOf(PolicyDeniedError);
+    expect(err).toMatchObject({ reason: "approval_channel_error" });
+    expect(states(approvals)).toEqual(["staged", "denied"]);
+    expect(approvals.records.at(-1)?.decision_reason).toBe("approval_channel_error");
+    expect(rail.settleCalls).toHaveLength(0);
   });
 });

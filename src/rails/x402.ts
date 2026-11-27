@@ -239,11 +239,22 @@ export function x402Wallet(cfg: X402WalletConfig): RailAdapter {
       const { txHash } = parseSettlementHeader(response.headers.get("x-payment-response"));
 
       // The receipt records what was signed: the accepted settle-time entry
-      // when there was one, else the approved quote.
+      // when there was one, else the approved quote. The selector accepts a
+      // payee that differs only in letter case; the receipt then keeps the
+      // approved casing, which is what history and policy lookups use.
       const paidAmount = accepted
         ? Number(accepted.maxAmountRequired) / 10 ** decimals
         : requirement.amount;
-      const paidTo = accepted ? accepted.payTo : requirement.recipient_wallet;
+      const approvedPayee = requirement.recipient_wallet;
+      const paidTo =
+        accepted &&
+        !(
+          approvedPayee !== undefined &&
+          typeof accepted.payTo === "string" &&
+          accepted.payTo.toLowerCase() === approvedPayee.toLowerCase()
+        )
+          ? accepted.payTo
+          : approvedPayee;
 
       const receipt: Receipt = {
         id: txHash ?? `x402_${Date.now()}`,

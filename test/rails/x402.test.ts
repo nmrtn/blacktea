@@ -405,7 +405,9 @@ describe("x402Wallet", () => {
 
       const { receipt } = await rail.settle(input, requirement, {});
       expect(receipt.amount).toBe(0.005);
-      expect(receipt.recipient_wallet).toBe("0xrecipient");
+      // A payee accepted despite a casing difference is recorded with the
+      // approved casing, which is what history and policy lookups use.
+      expect(receipt.recipient_wallet).toBe("0xRECIPIENT");
     });
   });
 });
