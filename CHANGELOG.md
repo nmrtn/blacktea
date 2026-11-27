@@ -8,7 +8,9 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
-## Unreleased
+## `@nmrtn/blacktea` v0.1.6 - 2026-11-28
+
+Two fixes for policy rules that could be stepped around.
 
 ### Security
 

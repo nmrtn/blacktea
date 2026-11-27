@@ -40,7 +40,7 @@ describe("CLI", () => {
     it("--version prints the version", () => {
       const r = runCli(["--version"]);
       expect(r.status).toBe(0);
-      expect(r.stdout.trim()).toBe("0.1.5");
+      expect(r.stdout.trim()).toBe("0.1.6");
     });
 
     it("--help prints usage text", () => {

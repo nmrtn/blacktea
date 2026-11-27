@@ -19,15 +19,12 @@ been paid, and record it to history conservatively.
 
 ## Publishing discipline
 
-Publishing `@nmrtn/blacktea` 0.1.5 is unblocked. It is a manual step
-(`npm publish`, run by hand). The MCP branch waits for it: it depends on the
-0.1.5 SDK and must not merge or publish before it.
+`@nmrtn/blacktea` 0.1.5 and `@nmrtn/blacktea-mcp` 0.1.4 are published.
+Publishing is a manual step (`npm publish`, run by hand), SDK first.
 
-Publish `@nmrtn/blacktea-mcp` 0.1.4 immediately after SDK 0.1.5. The
-already-published MCP 0.1.3 resolves SDK 0.1.5 on fresh installs, passes no
-approvals store, and so writes receipts to `./.blacktea/approvals.jsonl`
-under the host's working directory. Where that directory is not writable,
-approval-required payments fail closed until MCP 0.1.4 is out.
+`@nmrtn/blacktea` 0.1.6 is ready to publish once its release commit is on
+`main`. The MCP server depends on `^0.1.5`, so fresh installs pick up 0.1.6
+without an MCP release.
 
 ---
 
