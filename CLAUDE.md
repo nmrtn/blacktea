@@ -114,6 +114,14 @@ v0.0.x ships two approval channels and no HTTP webhook subsystem:
 Webhook delivery (library POSTs out to a URL) is on the roadmap but not yet
 implemented.
 
+## Code style
+
+Keep the code clean, simple and elegant. Do not over-engineer.
+
+- Keep the code DRY and the data model simple.
+- When you're confident about the code, before creating a PR, run `/simplify`
+  and `/security-review`.
+
 ## Things to NOT do
 
 These were considered and explicitly rejected during design. Reverse only with
