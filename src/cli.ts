@@ -35,13 +35,12 @@ import {
   ValidationError,
   isBlackteaError,
 } from "./errors.js";
+import { VERSION } from "./index.js";
 import { evaluatePolicy } from "./policy/evaluator.js";
 import { loadPolicy } from "./policy/load.js";
 import { PolicySchema } from "./policy/schema.js";
 import { x402Wallet } from "./rails/x402.js";
 import type { HistoryQuery } from "./types.js";
-
-const VERSION = "0.1.4";
 
 const program = new Command();
 program
