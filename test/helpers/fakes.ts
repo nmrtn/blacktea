@@ -3,6 +3,7 @@
  * network.
  */
 
+import { hostOf } from "../../src/host.js";
 import type {
   AuditEvent,
   HistoryFilter,
@@ -39,7 +40,7 @@ function match(e: HistoryRecord, filter: HistoryFilter | undefined): boolean {
   if (filter.wallet && e.recipient_wallet?.toLowerCase() !== filter.wallet.toLowerCase()) {
     return false;
   }
-  if (filter.url && e.recipient_url !== filter.url) return false;
+  if (filter.url && (!e.recipient_url || hostOf(e.recipient_url) !== filter.url)) return false;
   return true;
 }
 

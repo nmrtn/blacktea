@@ -7,9 +7,13 @@
  * on the audit log.
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { blacktea } from "../src/agent.js";
 import { ApprovalTimeoutError, PolicyDeniedError, ValidationError } from "../src/errors.js";
+import { FileBackedHistoryStore } from "../src/history/file-backed.js";
 import type { Policy } from "../src/policy/schema.js";
 import type { ApprovalStore, PayInput, RailAdapter, SettleResult } from "../src/types.js";
 import { FakeHistory, collectingAudit, fakeRail } from "./helpers/fakes.js";
@@ -1052,5 +1056,37 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       expect(i1.id).not.toBe(i2.id);
       expect(history.events).toHaveLength(2);
     });
+  });
+});
+
+describe("per-url limits against the file-backed history", () => {
+  it("counts earlier payments to the same host toward would_spend by url", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "blacktea-agent-"));
+    try {
+      const policy: Policy = {
+        rules: [
+          {
+            if: { would_spend: { window_hours: 24, gte: 6, by: "url" } },
+            then: { reject: "per_url_cap" },
+          },
+        ],
+        default: { approve: true },
+      };
+      const pay = blacktea({
+        source: fakeRail(), // every payment costs 4
+        policy,
+        history: new FileBackedHistoryStore({ path: join(dir, "history.jsonl") }),
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
+      await pay({ url: "https://api.example.com/v1/a", intent: "first" });
+      // Another host is not affected by the first payment.
+      await pay({ url: "https://other.example.com/v1/a", intent: "elsewhere" });
+      await expect(
+        pay({ url: "https://API.example.com./v1/b?x=1", intent: "second" }),
+      ).rejects.toMatchObject({ reason: "per_url_cap" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -14,6 +14,7 @@
  * Passing a string raises a clear error rather than silently misbehaving.
  */
 
+import { hostOf } from "../host.js";
 import type { HistoryQuery, PaymentIntentInput } from "../types.js";
 import { type Decision, actionToDecision } from "./decision.js";
 import type { Policy, PolicyCondition } from "./schema.js";
@@ -161,14 +162,6 @@ function filterForScope(
     return { url: hostOf(input.url) };
   }
   return undefined; // "all" or omitted
-}
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
 }
 
 /**

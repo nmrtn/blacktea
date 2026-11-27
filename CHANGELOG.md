@@ -18,6 +18,13 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
   blocklist entry or a per-wallet limit by quoting the same address in a
   different casing. Custom `HistoryStore` implementations should match
   `filter.wallet` the same way.
+- **Per-URL limits now count past payments.** `would_spend` and the other
+  history operators with `by: "url"` asked history for the URL's host, but
+  history records hold the full request URL and the two were compared
+  exactly, so nothing ever matched: only the current payment was measured
+  against the limit. The file-backed store now compares the host of each
+  recorded URL. Existing history files need no change. Custom
+  `HistoryStore` implementations should match `filter.url` the same way.
 
 ---
 

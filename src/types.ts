@@ -205,6 +205,10 @@ export interface HistoryQuery {
 export interface HistoryFilter {
   /** Recipient wallet. Stores must match it ignoring letter case. */
   wallet?: string;
+  /**
+   * A host, as `new URL(url).host` gives it. Records hold the full request
+   * URL in recipient_url, so stores must compare against that URL's host.
+   */
   url?: string;
 }
 

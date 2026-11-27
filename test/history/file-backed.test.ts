@@ -101,6 +101,38 @@ describe("FileBackedHistoryStore", () => {
       expect(await store.countSince({ seconds: 60, filter: { wallet: "0xabcd" } })).toBe(2);
     });
 
+    // filter.url is a host (what the policy evaluator passes); records hold
+    // the full request URL (what the rail's receipt carries).
+    it("filters by host against records that hold full URLs", async () => {
+      const store = new FileBackedHistoryStore({ path });
+      await store.record(
+        recordAt(0, { amount: 10, recipient_url: "https://api.openai.com/v1/chat" }),
+      );
+      await store.record(
+        recordAt(0, { amount: 5, recipient_url: "https://API.openai.com/v1/images?n=1" }),
+      );
+      await store.record(
+        recordAt(0, { amount: 20, recipient_url: "https://api.other.com/v1/chat" }),
+      );
+      await store.record(
+        recordAt(0, { amount: 40, recipient_url: "https://api.openai.com:8443/v1" }),
+      );
+      const filter = { url: "api.openai.com" };
+      expect(await store.sumSince({ seconds: 60, filter })).toBe(15);
+      expect(await store.countSince({ seconds: 60, filter })).toBe(2);
+    });
+
+    it("counts a host written with a trailing dot as the same host", async () => {
+      const store = new FileBackedHistoryStore({ path });
+      await store.record(recordAt(0, { amount: 10, recipient_url: "https://api.openai.com./v1" }));
+      await store.record(recordAt(0, { amount: 5, recipient_url: "https://api.openai.com/v1" }));
+      await store.record(
+        recordAt(0, { amount: 7, recipient_url: "https://api.openai.com.:8443/v1" }),
+      );
+      expect(await store.sumSince({ seconds: 60, filter: { url: "api.openai.com" } })).toBe(15);
+      expect(await store.sumSince({ seconds: 60, filter: { url: "api.openai.com:8443" } })).toBe(7);
+    });
+
     it("filters by url when filter.url is set", async () => {
       const store = new FileBackedHistoryStore({ path });
       await store.record(recordAt(0, { amount: 10, recipient_url: "api.openai.com" }));
