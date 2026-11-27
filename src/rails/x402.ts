@@ -5,16 +5,22 @@
  *
  *   preflight(): make the initial request, expect 402, parse the
  *                accepts[] array, return a PaymentRequirement.
- *   settle():    use wrapFetchWithPayment(fetch, signer) to sign and
- *                retry. Parse the x-payment-response settlement header
- *                into a Receipt; return the response body as data.
+ *   settle():    use wrapFetchWithPayment(fetch, signer, maxValue, selector)
+ *                to sign and retry. It pays only the approved quote:
+ *                maxValue is the approved amount in base units, and the
+ *                selector refuses (QuoteChangedError, nothing signed) any
+ *                settle-time option whose payee, network or asset differs
+ *                from the preflight quote or whose amount is higher. A
+ *                lower price to the same payee is accepted and recorded.
+ *                Parse the x-payment-response settlement header into a
+ *                Receipt; return the response body as data.
  *
  * v1 hardcoded for USDC on Base Sepolia / Base. When more assets land,
  * the currency + decimals lookup becomes a table keyed on the asset
  * contract address.
  */
 
-import { NetworkError, RailUnavailableError } from "../errors.js";
+import { NetworkError, QuoteChangedError, RailUnavailableError } from "../errors.js";
 import type {
   PayInput,
   PayOptions,
@@ -148,9 +154,52 @@ export function x402Wallet(cfg: X402WalletConfig): RailAdapter {
       requirement: PaymentRequirement,
       _opts: PayOptions,
     ): Promise<SettleResult> {
+      const approvedQuote = asAcceptEntry(requirement.raw);
+      let approvedBaseUnits: bigint;
+      try {
+        approvedBaseUnits =
+          approvedQuote?.maxAmountRequired !== undefined
+            ? BigInt(String(approvedQuote.maxAmountRequired))
+            : BigInt(Math.round(requirement.amount * 10 ** decimals));
+      } catch (err) {
+        throw new RailUnavailableError(
+          railName,
+          `Could not convert the approved amount to base units: ${(err as Error).message}`,
+        );
+      }
+
+      // The entry the selector accepted, i.e. what is actually signed. Set
+      // only when x402-fetch calls the selector (on a 402 at settle time).
+      let accepted: AcceptEntry | undefined;
+      const selectApprovedQuote = <T extends AcceptEntry>(entries: T[]): T => {
+        let firstMismatch: string | undefined;
+        for (const entry of entries) {
+          const mismatch = quoteMismatch(
+            entry,
+            requirement.recipient_wallet,
+            approvedQuote,
+            approvedBaseUnits,
+          );
+          if (mismatch === undefined) {
+            accepted = entry;
+            return entry;
+          }
+          firstMismatch ??= mismatch;
+        }
+        throw new QuoteChangedError(
+          railName,
+          firstMismatch ?? "the server offered no payment option",
+        );
+      };
+
       const { wrapFetchWithPayment } = await loadX402();
       const signer = await ensureSigner();
-      const fetchWithPayment = wrapFetchWithPayment(fetch, signer);
+      const fetchWithPayment = wrapFetchWithPayment(
+        fetch,
+        signer,
+        approvedBaseUnits,
+        selectApprovedQuote,
+      );
 
       let response: Response;
       try {
@@ -160,6 +209,7 @@ export function x402Wallet(cfg: X402WalletConfig): RailAdapter {
           ...(input.body !== undefined ? { body: JSON.stringify(input.body) } : {}),
         });
       } catch (err) {
+        if (err instanceof QuoteChangedError) throw err;
         throw new RailUnavailableError(railName, `x402 settle failed: ${(err as Error).message}`);
       }
 
@@ -188,13 +238,20 @@ export function x402Wallet(cfg: X402WalletConfig): RailAdapter {
 
       const { txHash } = parseSettlementHeader(response.headers.get("x-payment-response"));
 
+      // The receipt records what was signed: the accepted settle-time entry
+      // when there was one, else the approved quote.
+      const paidAmount = accepted
+        ? Number(accepted.maxAmountRequired) / 10 ** decimals
+        : requirement.amount;
+      const paidTo = accepted ? accepted.payTo : requirement.recipient_wallet;
+
       const receipt: Receipt = {
         id: txHash ?? `x402_${Date.now()}`,
-        amount: requirement.amount,
+        amount: paidAmount,
         currency: requirement.currency,
         rail: railName,
         ...(txHash ? { rail_charge_id: txHash } : {}),
-        ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
+        ...(paidTo ? { recipient_wallet: paidTo } : {}),
         recipient_url: input.url,
         paid_at: new Date().toISOString(),
       };
@@ -214,6 +271,49 @@ interface AcceptEntry {
   payTo?: string;
   asset?: string;
   [key: string]: unknown;
+}
+
+function asAcceptEntry(raw: unknown): AcceptEntry | undefined {
+  return raw && typeof raw === "object" ? (raw as AcceptEntry) : undefined;
+}
+
+/**
+ * Why a settle-time payment option differs from the approved quote, or
+ * undefined when it may be signed. The payee must match (letter case
+ * ignored), the amount must not exceed what was approved, and when the
+ * preflight quote is known its network and asset must match too.
+ */
+function quoteMismatch(
+  entry: AcceptEntry,
+  approvedPayee: string | undefined,
+  approvedQuote: AcceptEntry | undefined,
+  approvedBaseUnits: bigint,
+): string | undefined {
+  if (
+    typeof entry.payTo !== "string" ||
+    approvedPayee === undefined ||
+    entry.payTo.toLowerCase() !== approvedPayee.toLowerCase()
+  ) {
+    return `payTo ${String(entry.payTo)} is not the approved ${String(approvedPayee)}`;
+  }
+  if (approvedQuote) {
+    if (entry.network !== approvedQuote.network) {
+      return `network ${String(entry.network)} is not the approved ${String(approvedQuote.network)}`;
+    }
+    if (entry.asset !== approvedQuote.asset) {
+      return `asset ${String(entry.asset)} is not the approved ${String(approvedQuote.asset)}`;
+    }
+  }
+  let amount: bigint;
+  try {
+    amount = BigInt(String(entry.maxAmountRequired));
+  } catch {
+    return `maxAmountRequired ${String(entry.maxAmountRequired)} is not an integer`;
+  }
+  if (amount > approvedBaseUnits) {
+    return `maxAmountRequired ${amount} is above the approved ${approvedBaseUnits}`;
+  }
+  return undefined;
 }
 
 function pickFirstAccept(body: unknown): AcceptEntry | null {

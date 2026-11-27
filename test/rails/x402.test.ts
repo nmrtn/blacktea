@@ -21,7 +21,9 @@ vi.mock("x402-fetch", () => ({
 
 // Now import after the mock is registered.
 const { x402Wallet } = await import("../../src/rails/x402.js");
-const { NetworkError, RailUnavailableError } = await import("../../src/errors.js");
+const { NetworkError, QuoteChangedError, RailUnavailableError } = await import(
+  "../../src/errors.js"
+);
 
 const TEST_PK = "0x0000000000000000000000000000000000000000000000000000000000000001";
 
@@ -286,6 +288,124 @@ describe("x402Wallet", () => {
 
       const result = await rail.settle({ url: "https://x.com/paid", intent: "t" }, requirement, {});
       expect(result.data).toBeUndefined();
+    });
+  });
+
+  describe("settle pays only the approved quote", () => {
+    type Selector = (reqs: Array<Record<string, unknown>>) => Record<string, unknown>;
+    const input = { url: "https://x.com/paid", intent: "t" };
+    const approved = {
+      scheme: "exact",
+      network: "base-sepolia",
+      maxAmountRequired: "10000",
+      payTo: "0xRECIPIENT",
+      asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    };
+
+    function okResponse(): Response {
+      return new Response("{}", {
+        status: 200,
+        headers: { "x-payment-response": makeSettlementHeader("0xabc") },
+      });
+    }
+
+    // Preflight against a 402 quote, settle with a mocked x402-fetch, and
+    // return the arguments settle() passed to wrapFetchWithPayment.
+    async function settleAndCapture(
+      overrides: Record<string, unknown> = {},
+    ): Promise<[unknown, unknown, unknown, Selector]> {
+      vi.mocked(fetch).mockResolvedValue(make402Response(overrides));
+      mockWrapFetchWithPayment.mockReturnValue(vi.fn().mockResolvedValue(okResponse()));
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      const requirement = await rail.preflight(input);
+      await rail.settle(input, requirement, {});
+      return mockWrapFetchWithPayment.mock.calls[0] as [unknown, unknown, unknown, Selector];
+    }
+
+    it("passes the approved amount as maxValue in base units", async () => {
+      const [, , maxValue] = await settleAndCapture();
+      expect(maxValue).toBe(10000n);
+    });
+
+    it("settles a payment above 0.10 USDC", async () => {
+      const [, , maxValue] = await settleAndCapture({ maxAmountRequired: "4000000" });
+      expect(maxValue).toBe(4000000n);
+    });
+
+    it("derives maxValue from requirement.amount when there is no raw quote", async () => {
+      mockWrapFetchWithPayment.mockReturnValue(vi.fn().mockResolvedValue(okResponse()));
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      await rail.settle(input, { amount: 0.01, currency: "USDC", recipient_wallet: "0xR" }, {});
+      expect(mockWrapFetchWithPayment.mock.calls[0]?.[2]).toBe(10000n);
+    });
+
+    it("selector accepts an identical quote", async () => {
+      const [, , , select] = await settleAndCapture();
+      expect(select([approved])).toEqual(approved);
+    });
+
+    it("selector accepts a payee that differs only by letter case", async () => {
+      const [, , , select] = await settleAndCapture();
+      expect(select([{ ...approved, payTo: "0xrecipient" }]).payTo).toBe("0xrecipient");
+    });
+
+    it("selector picks a later matching entry", async () => {
+      const [, , , select] = await settleAndCapture();
+      expect(select([{ ...approved, payTo: "0xEVIL" }, approved])).toEqual(approved);
+    });
+
+    it.each([
+      ["higher amount", { maxAmountRequired: "10001" }],
+      ["different payee", { payTo: "0xEVIL" }],
+      ["different network", { network: "base" }],
+      ["different asset", { asset: "0xOTHER" }],
+    ])("selector refuses a %s", async (_n, change) => {
+      const [, , , select] = await settleAndCapture();
+      expect(() => select([{ ...approved, ...change }])).toThrow(QuoteChangedError);
+    });
+
+    it("selector without a raw quote compares only payee and amount", async () => {
+      mockWrapFetchWithPayment.mockReturnValue(vi.fn().mockResolvedValue(okResponse()));
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      await rail.settle(
+        input,
+        { amount: 0.01, currency: "USDC", recipient_wallet: "0xRECIPIENT" },
+        {},
+      );
+      const select = mockWrapFetchWithPayment.mock.calls[0]?.[3] as Selector;
+      const other = { ...approved, network: "base", asset: "0xOTHER" };
+      expect(select([other])).toEqual(other);
+      expect(() => select([{ ...approved, payTo: "0xEVIL" }])).toThrow(QuoteChangedError);
+      expect(() => select([{ ...approved, maxAmountRequired: "10001" }])).toThrow(
+        QuoteChangedError,
+      );
+    });
+
+    it("surfaces QuoteChangedError from settle unchanged", async () => {
+      mockWrapFetchWithPayment.mockReturnValue(
+        vi.fn().mockRejectedValue(new QuoteChangedError("x402", "x")),
+      );
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      await expect(
+        rail.settle(input, { amount: 0.01, currency: "USDC", recipient_wallet: "0xR" }, {}),
+      ).rejects.toBeInstanceOf(QuoteChangedError);
+    });
+
+    it("records the lower amount when the settle-time quote is cheaper", async () => {
+      vi.mocked(fetch).mockResolvedValue(make402Response());
+      mockWrapFetchWithPayment.mockImplementation(
+        (_fetch: unknown, _signer: unknown, _max: unknown, select: Selector) =>
+          vi.fn(async () => {
+            select([{ ...approved, payTo: "0xrecipient", maxAmountRequired: "5000" }]);
+            return okResponse();
+          }),
+      );
+      const rail = x402Wallet({ privateKey: TEST_PK, chain: "base-sepolia" });
+      const requirement = await rail.preflight(input);
+
+      const { receipt } = await rail.settle(input, requirement, {});
+      expect(receipt.amount).toBe(0.005);
+      expect(receipt.recipient_wallet).toBe("0xrecipient");
     });
   });
 });

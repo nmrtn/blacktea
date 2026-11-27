@@ -187,6 +187,8 @@ export interface RailAdapter {
    * return both the receipt and the response body.
    * For push rails (future): submit the transfer, return the receipt
    * with data left undefined.
+   * It must not pay more than `requirement.amount` or to a recipient other
+   * than `requirement.recipient_wallet`.
    */
   settle(input: PayInput, requirement: PaymentRequirement, opts: PayOptions): Promise<SettleResult>;
 }
