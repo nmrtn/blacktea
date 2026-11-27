@@ -9,27 +9,23 @@ developer pain, and enough context to pick it up cold.
 
 ## Publishing discipline
 
-### ⚠ ApprovalRecord schema merged but unpublished — DO NOT `npm publish` until implementation lands
+Publishing `@nmrtn/blacktea` 0.1.5 is unblocked. It is a manual step
+(`npm publish`, run by hand). The MCP branch waits for it: it depends on the
+0.1.5 SDK and must not merge or publish before it.
 
-PR #6 merged on `main` adds `src/approval-record.ts` and exports
-`ApprovalRecord` / `ApprovalRoute` / `ApprovalFinalState` from
-`src/index.ts`. These types are a **design preview**: the contract is
-public on `main` but no code emits an `ApprovalRecord` yet.
+---
 
-If you `npm publish` from `main` as-is, those types ship to npm without
-the working feature behind them. The right cadence is:
+## Done in v0.1.5 (2026-11-27)
 
-1. Implement emission in `agent.ts` (mint a record at `approval_staged`,
-   update lifecycle state through `payment_completed` / `payment_denied` /
-   `approval_timed_out`, write append-only to the audit JSONL tagged
-   `event: "approval_record"`, add the JCS canonicalizer for
-   `params_hash` per the schema's tagged format).
-2. Add tests for emission.
-3. Bump SDK to **0.1.5**.
-4. CHANGELOG + publish.
+### ✅ ApprovalRecord emission
 
-Until step 3, leave the version at 0.1.4 on `main` and do not publish.
-The schema lives in source as a contract for the upcoming feature.
+The `ApprovalRecord` schema that sat on `main` as an unpublished design
+preview is now backed by the feature. `agent.ts` mints a receipt when a
+payment is held, advances it through approved, denied, expired, settled and
+failed, appends it to `./.blacktea/approvals.jsonl`, and mirrors each
+snapshot to the audit sink as `approval_record`. Also shipped: the `trigger`
+input, single-use approvals bound to the staged request, the x402 settle-time
+quote check, and `blacktea approvals show`.
 
 ---
 

@@ -32,6 +32,7 @@ const { data, receipt } = await pay({
 const { data: dataset } = await pay({
   url: "https://premium-data.example.com/dump",
   intent: "monthly dataset for the analyst agent",
+  trigger: "analyst agent hit a gap in last month's figures", // what prompted it, shown to the human
   max_amount: 2000, // safety cap; throws if the server asks for more
 });
 
@@ -67,6 +68,7 @@ Today people patch this together themselves with YAML configs, Slack webhooks, a
 - Spending limits. Write a rule for any shape you need: per call, per day, by recipient, by intent, by time of day, anything you can express in the policy DSL.
 - Approval flow when a rule says "ask the human first."
 - Audit log of every payment, including the agent's own stated reason for spending it.
+- Approval receipts: a record of every payment that needed a human, from the moment it was held to the moment it settled.
 - Works with x402 today (an open protocol for paying for HTTP resources with stablecoins, USDC on Base). Architecture is rail-pluggable so AP2, ACP, SEPA, ACH, and card adapters can be added later as separate packages.
 
 ## Demo
@@ -170,10 +172,14 @@ Any agent platform with shell access can call blacktea directly:
 EVM_PRIVATE_KEY=0x... blacktea pay \
   --url https://api.example.com/paid \
   --intent "fetch the report" \
+  --trigger "user asked for the Q3 numbers" \
   --max-amount 1
 
 # Inspect what your agent spent
 blacktea audit show --last 10
+
+# Inspect payments that needed a human (held, denied, expired, settled)
+blacktea approvals show --last 10
 
 # Sanity-check your policy
 blacktea policy validate ./policy.json
@@ -181,7 +187,8 @@ blacktea policy test ./policy.json --amount 50 --url https://x.com
 ```
 
 Output is JSON by default so the agent can parse it; exit codes are
-distinct per error class (3=policy denied, 4=approval timeout, etc).
+distinct per error class (3=policy denied, 4=approval timeout,
+9=quote changed, 10=approval invalid, etc).
 Run `blacktea --help` for the full surface.
 
 ### As an MCP server (Claude Desktop, Cursor, OpenClaw, Hermes)
@@ -222,6 +229,40 @@ against a simulated merchant: no x402 endpoint, no USDC, no signing.
 ask-first, and reject all fire against your policy before you wire a real
 wallet.
 
+## Approval receipts
+
+Every payment that needs a human gets a receipt. A receipt holds the amount
+and currency, the recipient wallet and URL, the agent's stated intent, the
+trigger (what the agent says prompted the request), the rule that required
+approval, the approval channel, the expiry, a hash of the exact request that
+was approved, and the state: `staged`, `approved`, `denied`, `expired`,
+`settled`, or `failed`. It never holds request bodies, headers, or the
+private key.
+
+Receipts are appended to `./.blacktea/approvals.jsonl`, one full snapshot per
+state change, and mirrored to your audit sink as `approval_record` events.
+Read them with:
+
+```bash
+blacktea approvals show --last 10
+blacktea approvals show --json
+```
+
+A receipt ends in `settled` whenever the rail has paid, even if a later
+bookkeeping step fails. `failed` means the rail did not pay. If the receipt
+for `staged` or `approved` cannot be written, the payment is blocked.
+
+Approvals are single-use and bound to the request the human saw. With the
+two-phase API, `pay.stage()` holds the payment and `pay.complete()` settles
+it from a private copy kept by the factory; the `StagedIntent` you hold is
+only a handle. Completing the same intent twice, or one the factory does not
+know, throws `ApprovalInvalidError` (`unknown_or_consumed`). Completing an
+intent whose request was altered since staging throws it too
+(`params_changed`). The expiry is checked against the window recorded when
+the payment was staged.
+
+The trigger is reported by the agent. It helps you spot a bad request; it is not proof.
+
 ## A policy file looks like this
 
 ```json
@@ -259,6 +300,8 @@ More examples in [docs/policy-cookbook.md](docs/policy-cookbook.md).
 | ACH (Plaid) | Planned, design open | n/a |
 | Cards (Stripe Issuing auth-webhook) | Planned, deferred to v1.5+ | n/a |
 
+The x402 rail refuses a settle-time quote that is higher or names a different payee than the one the policy saw.
+
 The `RailAdapter` interface is two methods (`preflight`, `settle`) plus
 `name` and `supports`. Adding a rail is a separate adapter package; the
 core never changes. See `src/rails/x402.ts` for the reference shape,
@@ -292,7 +335,7 @@ To get set up locally:
 git clone https://github.com/nmrtn/blacktea.git
 cd blacktea
 npm install
-npm test          # 166 tests, ~10s
+npm test          # 263 tests, ~10s
 npm run lint
 npm run typecheck
 npm run build
