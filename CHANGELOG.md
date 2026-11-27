@@ -48,6 +48,15 @@ Approval receipts, the `trigger` input, and a settle-time quote check for x402.
   The rail now pays only the approved quote and refuses a settle-time quote
   that is higher or names a different payee, network or asset, with
   `QuoteChangedError` (nothing is signed).
+- **x402 pays only on the configured chain and token.** The network and
+  token contract in a server's quote are what gets signed, and nothing
+  compared them to the wallet's configuration: a wallet set up for
+  `base-sepolia` could be quoted, and would sign, a payment on `base`, or in
+  another token. The rail now refuses, at preflight and again at settle, any
+  quote that is not on the configured `chain` and in the expected token: USDC
+  for `base` and `base-sepolia`, or the new `asset` option on `x402Wallet`.
+  Any other chain now needs `asset` set. A 402 that lists several options is
+  matched against all of them, not only the first.
 - **Payments above 0.10 USDC no longer fail at settle.** No cap was passed to
   `x402-fetch`, so it refused anything above its default. The cap is now the
   approved amount.

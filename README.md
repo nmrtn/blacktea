@@ -305,7 +305,7 @@ More examples in [docs/policy-cookbook.md](docs/policy-cookbook.md).
 | ACH (Plaid) | Planned, design open | n/a |
 | Cards (Stripe Issuing auth-webhook) | Planned, deferred to v1.5+ | n/a |
 
-The x402 rail refuses a settle-time quote that is higher or names a different payee than the one the policy saw.
+The x402 rail refuses a settle-time quote that is higher or names a different payee than the one the policy saw. It also refuses any quote that is not on the configured chain and in the expected token (USDC on `base` and `base-sepolia`; set `asset` on `x402Wallet` for another chain or token).
 
 The `RailAdapter` interface is two methods (`preflight`, `settle`) plus
 `name` and `supports`. Adding a rail is a separate adapter package; the

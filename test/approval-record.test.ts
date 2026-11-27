@@ -24,16 +24,10 @@ import type {
   ApprovalRequest,
   ApprovalStore,
   AuditEvent,
-  HistoryFilter,
-  HistoryRecord,
   HistoryStore,
   PayInput,
-  PayOptions,
-  PaymentRequirement,
-  RailAdapter,
-  Receipt,
-  SettleResult,
 } from "../src/types.js";
+import { FakeHistory, fakeRail } from "./helpers/fakes.js";
 
 // The console channel asks through readline. Stub it to answer "y".
 vi.mock("node:readline/promises", () => ({
@@ -43,73 +37,11 @@ vi.mock("node:readline/promises", () => ({
   }),
 }));
 
-class FakeHistory implements HistoryStore {
-  events: HistoryRecord[] = [];
-  async record(event: HistoryRecord): Promise<void> {
-    this.events.push(event);
-  }
-  async sumSince(opts: { seconds: number; filter?: HistoryFilter }): Promise<number> {
-    return this.events.filter((e) => match(e, opts.filter)).reduce((acc, e) => acc + e.amount, 0);
-  }
-  async countSince(opts: { seconds: number; filter?: HistoryFilter }): Promise<number> {
-    return this.events.filter((e) => match(e, opts.filter)).length;
-  }
-  async prune(): Promise<number> {
-    const len = this.events.length;
-    this.events = [];
-    return len;
-  }
-}
-
 /** A history store whose writes fail, to break the pipeline after the rail settled. */
 class BrokenHistory extends FakeHistory {
   override async record(): Promise<void> {
     throw new Error("history disk full");
   }
-}
-
-function match(e: HistoryRecord, filter: HistoryFilter | undefined): boolean {
-  if (!filter) return true;
-  if (filter.wallet && e.recipient_wallet !== filter.wallet) return false;
-  if (filter.url && e.recipient_url !== filter.url) return false;
-  return true;
-}
-
-function fakeRail(
-  name = "x402",
-  behavior: {
-    settle?: (input: PayInput, req: PaymentRequirement, opts: PayOptions) => Promise<SettleResult>;
-  } = {},
-): RailAdapter & { settleCalls: Array<{ input: PayInput; req: PaymentRequirement }> } {
-  const settleCalls: Array<{ input: PayInput; req: PaymentRequirement }> = [];
-  const defaultSettle = async (input: PayInput, req: PaymentRequirement): Promise<SettleResult> => {
-    const receipt: Receipt = {
-      id: "rail_receipt_id",
-      amount: req.amount,
-      currency: req.currency,
-      rail: name,
-      rail_charge_id: "ch_test_123",
-      recipient_url: input.url,
-      recipient_wallet: req.recipient_wallet,
-      paid_at: new Date().toISOString(),
-    };
-    return { receipt, data: { fake: "api response" } };
-  };
-  return {
-    name,
-    supports: () => true,
-    preflight: async () => ({
-      amount: 4,
-      currency: "USDC",
-      recipient_wallet: "0xabc123",
-      network: "base-sepolia",
-    }),
-    settle: async (input, req, opts) => {
-      settleCalls.push({ input, req });
-      return behavior.settle ? behavior.settle(input, req, opts) : defaultSettle(input, req);
-    },
-    settleCalls,
-  };
 }
 
 class MemoryApprovals implements ApprovalStore {

@@ -158,8 +158,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   function pruneStaged(): void {
     const cutoff = Date.now() - STAGED_PRUNE_AFTER_MS;
     for (const [intentId, held] of stagedReceipts) {
-      const expiresAtMs = Date.parse(held.record.expires_at);
-      if (Number.isFinite(expiresAtMs) && expiresAtMs < cutoff) stagedReceipts.delete(intentId);
+      if (Date.parse(held.record.expires_at) < cutoff) stagedReceipts.delete(intentId);
     }
   }
 
@@ -187,10 +186,11 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     opts: PayOptions;
     requirement: PaymentRequirement;
     ruleFired: string;
-    expiresAt: string;
+    timeoutSeconds: number;
   }): ApprovalRecord {
     const { input, requirement } = args;
-    const now = new Date().toISOString();
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
     return {
       intent_id: args.intentId,
       created_at: now,
@@ -209,23 +209,20 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       rule_fired: args.ruleFired,
       decision_reason: null,
       params_hash: computeParamsHash(input, requirement),
-      expires_at: args.expiresAt,
+      expires_at: new Date(nowMs + args.timeoutSeconds * 1000).toISOString(),
     };
   }
 
   async function writeReceipt(record: ApprovalRecord): Promise<void> {
-    if (record.state === "staged" || record.state === "approved") {
+    try {
       await approvals.append(record);
-    } else {
-      try {
-        await approvals.append(record);
-      } catch (err) {
-        emit(audit, "approval_record_write_failed", record.intent_id, {
-          state: record.state,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return;
-      }
+    } catch (err) {
+      if (record.state === "staged" || record.state === "approved") throw err;
+      emit(audit, "approval_record_write_failed", record.intent_id, {
+        state: record.state,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
     }
     // The snapshot is on disk. The audit mirror is best effort: a throwing
     // sink must not abort the payment or read as a store failure.
@@ -255,9 +252,8 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   // before the rail is called.
   async function settleWithReceipt(
     args: SettleArgs,
-    record: ApprovalRecord | undefined,
+    record: ApprovalRecord,
   ): Promise<PaymentIntent> {
-    if (!record) return settleAndRecord(args);
     const approved = await advanceReceipt(record, "approved");
     const outcome = await settleOnce(args);
     // `failed` only when the rail did not settle. A later step failing
@@ -355,13 +351,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       return { kind: "rejected", reason: "max_amount_exceeded", ruleFired: "input.max_amount" };
     }
 
-    const policyInput: PaymentIntentInput = {
-      amount: requirement.amount,
-      currency: requirement.currency,
-      url: input.url,
-      intent: input.intent,
-      ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
-    };
+    const policyInput = toPolicyInput(input, requirement);
 
     const decision = await evaluatePolicy(policyInput, policy, history);
     emit(audit, "policy_evaluated", intentId, {
@@ -546,7 +536,6 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       );
     }
 
-    const expiresAt = new Date(Date.now() + decision.timeout_seconds * 1000).toISOString();
     const record = mintReceipt({
       intentId,
       channel: decision.channel,
@@ -554,7 +543,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       opts,
       requirement,
       ruleFired: decision.rule_fired,
-      expiresAt,
+      timeoutSeconds: decision.timeout_seconds,
     });
     // Copied right after minting (no await in between), as stage() does:
     // the settle below reads only these copies, so whatever the approval
@@ -579,7 +568,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         policyInput,
         trigger: input.trigger,
         decision,
-        expiresAt,
+        expiresAt: record.expires_at,
         onApprovalNeeded,
         audit,
       });
@@ -620,7 +609,15 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       // Honor the policy's timeout_seconds at stage time. complete() refuses
       // to approve a stage past expires_at; the MCP server uses this instead
       // of a fixed TTL for the staged-intents map.
-      const expiresAt = new Date(Date.now() + decision.timeout_seconds * 1000).toISOString();
+      const record = mintReceipt({
+        intentId,
+        channel: "staged",
+        input,
+        opts,
+        requirement,
+        ruleFired: decision.rule_fired,
+        timeoutSeconds: decision.timeout_seconds,
+      });
       const staged: StagedIntent = {
         intent_id: intentId,
         amount: requirement.amount,
@@ -630,25 +627,16 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         intent: input.intent,
         ...(input.trigger !== undefined ? { trigger: input.trigger } : {}),
         rule_fired: decision.rule_fired,
-        expires_at: expiresAt,
+        expires_at: record.expires_at,
         _input: input,
         _requirement: requirement,
         _opts: opts,
         _railName: rail.name,
         _idempotencyKey: idempotencyKey,
       };
-      const record = mintReceipt({
-        intentId,
-        channel: "staged",
-        input,
-        opts,
-        requirement,
-        ruleFired: decision.rule_fired,
-        expiresAt,
-      });
-      // Copied right after minting (no await in between), so the copies are
-      // exactly what params_hash describes. The StagedIntent above keeps the
-      // caller's objects and shares no references with them.
+      // Copied with no await since minting, so the copies are exactly what
+      // params_hash describes. The StagedIntent above keeps the caller's
+      // objects and shares no references with the copies.
       const held: HeldPayment = {
         record,
         ...privateCopies(input, requirement, opts),
@@ -661,7 +649,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         amount: requirement.amount,
         currency: requirement.currency,
         rule_fired: decision.rule_fired,
-        expires_at: expiresAt,
+        expires_at: record.expires_at,
         timeout_seconds: decision.timeout_seconds,
       });
       return { outcome: "approval_required", staged };
@@ -749,8 +737,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     // policy's timeout_seconds is meaningless on the two-phase / MCP path.
     // The window is the minted one: staged.expires_at is caller-held and
     // could be moved.
-    const expiresAtMs = Date.parse(record.expires_at);
-    if (Number.isFinite(expiresAtMs) && Date.now() > expiresAtMs) {
+    if (Date.now() > Date.parse(record.expires_at)) {
       await advanceReceipt(record, "expired");
       emit(audit, "approval_timed_out", intentId, {
         expires_at: record.expires_at,
@@ -786,13 +773,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       throw new NoEligibleRailError([held.railName]);
     }
 
-    const policyInput: PaymentIntentInput = {
-      amount: requirement.amount,
-      currency: requirement.currency,
-      url: input.url,
-      intent: input.intent,
-      ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
-    };
+    const policyInput = toPolicyInput(input, requirement);
 
     return settleWithReceipt(
       {
@@ -835,6 +816,18 @@ function validateInput(input: PayInput): void {
   ) {
     throw new ValidationError("Invalid trigger. Must be a string of 1 to 500 characters.");
   }
+}
+
+// ---------- policy input ----------
+
+function toPolicyInput(input: PayInput, requirement: PaymentRequirement): PaymentIntentInput {
+  return {
+    amount: requirement.amount,
+    currency: requirement.currency,
+    url: input.url,
+    intent: input.intent,
+    ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
+  };
 }
 
 // ---------- private copies ----------

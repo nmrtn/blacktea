@@ -235,10 +235,7 @@ approvals
     for (const { record: r, display_state } of rows) {
       const amt = `${r.amount} ${r.currency}`.padEnd(13);
       const recipient = sanitizeForDisplay(r.recipient_wallet ?? r.recipient_url).padEnd(42);
-      const trigger =
-        r.trigger === null || r.trigger === undefined
-          ? "-"
-          : sanitizeForDisplay(r.trigger).slice(0, 40);
+      const trigger = sanitizeForDisplay(r.trigger ?? "-").slice(0, 40);
       console.log(
         `${r.updated_at.padEnd(25)} ${display_state.padEnd(21)} ${amt} ${recipient} ${trigger}`,
       );
