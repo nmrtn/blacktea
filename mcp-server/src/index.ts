@@ -24,6 +24,9 @@
  *   BLACKTEA_CHAIN       default "base-sepolia"
  *   BLACKTEA_POLICY      path to policy.json, default "./policy.json"
  *   BLACKTEA_HISTORY     path to history.jsonl, default "./.blacktea/history.jsonl"
+ *   BLACKTEA_APPROVALS   path to approvals.jsonl (one receipt snapshot per state
+ *                        change of every held payment), default approvals.jsonl
+ *                        next to the history file
  *   BLACKTEA_RAIL        "mock" to use the no-network simulated rail (try the
  *                        policy + approval flow with no x402 / wallet / USDC);
  *                        anything else uses the real x402 rail
@@ -31,19 +34,21 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import {
+  FileBackedApprovalStore,
   FileBackedHistoryStore,
   type StagedIntent,
   blacktea,
   isBlackteaError,
+  sanitizeForDisplay,
 } from "@nmrtn/blacktea";
 import { mockWallet, x402Wallet } from "@nmrtn/blacktea/adapters";
 
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 const PACKAGE_NAME = "@nmrtn/blacktea-mcp";
 
 // ---------- config from env ----------
@@ -68,6 +73,10 @@ const chain = process.env.BLACKTEA_CHAIN ?? "base-sepolia";
 const policyPath = resolve(process.env.BLACKTEA_POLICY ?? "./policy.json");
 const historyPath = resolve(process.env.BLACKTEA_HISTORY ?? "./.blacktea/history.jsonl");
 
+const approvalsPath = resolve(
+  process.env.BLACKTEA_APPROVALS ?? join(dirname(historyPath), "approvals.jsonl"),
+);
+
 if (!existsSync(policyPath)) {
   console.error(`${PACKAGE_NAME}: policy file not found at ${policyPath}.`);
   console.error(
@@ -87,6 +96,8 @@ if (!existsSync(policyPath)) {
 // while payments were being recorded somewhere else.
 const history = new FileBackedHistoryStore({ path: historyPath });
 
+const approvals = new FileBackedApprovalStore({ path: approvalsPath });
+
 const pay = blacktea({
   source: useMockRail
     ? mockWallet({ amount: Number.isFinite(mockAmount) ? mockAmount : 0.01 })
@@ -94,6 +105,7 @@ const pay = blacktea({
       x402Wallet({ privateKey: pk as string, chain }),
   policy: policyPath,
   history,
+  approvals,
   audit: () => {
     // The MCP transport owns stdout; any audit prints would corrupt the
     // protocol stream. Stay quiet here. The history file is the audit.
@@ -167,6 +179,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               "A short natural-language reason for this payment. Logged in the audit trail and shown to the human if approval is required.",
           },
+          trigger: {
+            type: "string",
+            description:
+              "What prompted this payment: the message, file or event that led you to request it. Shown to the human and stored on the approval receipt as reported by you.",
+          },
           max_amount: {
             type: "number",
             description:
@@ -209,7 +226,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "audit_query",
       description:
-        "Read recent completed payments from the history file. Useful when you need to explain what was paid for or how much was spent today. Held, denied, and expired payments are NOT in this file; they live in the agent process's audit sink.",
+        "Read recent completed payments from the history file. Useful when you need to explain what was paid for or how much was spent today. Held and denied payments are NOT in this file; they are in the approvals file (BLACKTEA_APPROVALS).",
       inputSchema: {
         type: "object",
         properties: {
@@ -253,12 +270,30 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return err("invalid_input", "url and intent are required");
     }
 
+    // trigger is optional, but when present it must be a string of 1 to 500
+    // characters. Checked here so a bad value never reaches pay.stage().
+    let trigger: string | undefined;
+    if (args.trigger !== undefined && args.trigger !== null) {
+      if (
+        typeof args.trigger !== "string" ||
+        args.trigger.length < 1 ||
+        args.trigger.length > 500
+      ) {
+        return err("invalid_input", "trigger must be a string of 1 to 500 characters");
+      }
+      trigger = args.trigger;
+    }
+
     try {
-      const result = await pay.stage({
-        url,
-        intent,
-        ...(maxAmount !== undefined ? { max_amount: maxAmount } : {}),
-      });
+      const result = await pay.stage(
+        {
+          url,
+          intent,
+          ...(trigger !== undefined ? { trigger } : {}),
+          ...(maxAmount !== undefined ? { max_amount: maxAmount } : {}),
+        },
+        { origin: { mcp_server: PACKAGE_NAME, tool: "pay" } },
+      );
 
       if (result.outcome === "completed") {
         return ok({ receipt: result.intent.receipt, data: result.intent.data });
@@ -281,7 +316,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         currency: staged.currency,
         recipient: staged.recipient_wallet ?? staged.recipient_url,
         rule_fired: staged.rule_fired,
-        message: `This payment of ${staged.amount} ${staged.currency} for "${staged.intent}" needs your approval (matched ${staged.rule_fired}). Ask the human to confirm. If they approve, call approve_payment with intent_id "${staged.intent_id}". If they decline, call reject_payment with the same intent_id. Nothing is charged until you call approve_payment.`,
+        intent: staged.intent,
+        trigger: staged.trigger ?? null,
+        message: `This payment of ${staged.amount} ${staged.currency} for "${sanitizeForDisplay(staged.intent)}" needs your approval (matched ${staged.rule_fired}).${staged.trigger ? ` Reported trigger: ${sanitizeForDisplay(staged.trigger)}.` : ""} Ask the human to confirm. If they approve, call approve_payment with intent_id "${staged.intent_id}". If they decline, call reject_payment with the same intent_id. Nothing is charged until you call approve_payment.`,
       });
     } catch (caught) {
       if (isBlackteaError(caught)) {
@@ -385,5 +422,5 @@ await server.connect(transport);
 // Stderr-only banner so the MCP client can see we are up without corrupting
 // the stdio protocol on stdout.
 console.error(
-  `${PACKAGE_NAME} v${VERSION} ready. rail=${useMockRail ? "mock" : "x402"} chain=${chain} policy=${policyPath} history=${historyPath}`,
+  `${PACKAGE_NAME} v${VERSION} ready. rail=${useMockRail ? "mock" : "x402"} chain=${chain} policy=${policyPath} history=${historyPath} approvals=${approvalsPath}`,
 );

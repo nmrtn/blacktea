@@ -59,6 +59,14 @@ Same pattern. The MCP standard is consistent across clients.
 | `BLACKTEA_POLICY` | no | `./policy.json` | Path to the policy file. Use an absolute path; relative paths resolve from wherever the MCP client spawns the server. |
 | `BLACKTEA_CHAIN` | no | `base-sepolia` | EVM chain identifier passed to x402. Use `base` for mainnet. |
 | `BLACKTEA_HISTORY` | no | `./.blacktea/history.jsonl` | Path to the JSONL audit log. |
+| `BLACKTEA_APPROVALS` | no | `approvals.jsonl` next to the history file | Path to the JSONL file of approval receipts, one snapshot per state change of every held payment. |
+
+## The `trigger` argument
+
+`pay` takes an optional `trigger` (1 to 500 characters): the message, file
+or event that led the agent to request the payment. It is shown to the human
+in the approval message and stored on the approval receipt. It is reported
+by the agent, not verified, and policy rules cannot match on it.
 
 ## What a policy file looks like
 
