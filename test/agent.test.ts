@@ -9,9 +9,10 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { blacktea } from "../src/agent.js";
-import { ApprovalTimeoutError, PolicyDeniedError } from "../src/errors.js";
+import { ApprovalTimeoutError, PolicyDeniedError, ValidationError } from "../src/errors.js";
 import type { Policy } from "../src/policy/schema.js";
 import type {
+  ApprovalStore,
   AuditEvent,
   HistoryFilter,
   HistoryRecord,
@@ -129,6 +130,11 @@ const baseInput: PayInput = {
 function collectingAudit(): { sink: (e: AuditEvent) => void; events: AuditEvent[] } {
   const events: AuditEvent[] = [];
   return { sink: (e) => events.push(e), events };
+}
+
+/** Discards approval receipts so tests never write ./.blacktea/approvals.jsonl. */
+function noopApprovals(): ApprovalStore {
+  return { append: async () => {} };
 }
 
 describe("blacktea()", () => {
@@ -296,6 +302,7 @@ describe("blacktea()", () => {
       const history = new FakeHistory();
       const onApprovalNeeded = vi.fn(async () => ({ decision: "approve" as const }));
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy,
         history,
@@ -318,6 +325,7 @@ describe("blacktea()", () => {
         reason: "human_said_no",
       }));
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy,
         history,
@@ -332,7 +340,13 @@ describe("blacktea()", () => {
     it("throws ValidationError if callback channel fires but no onApprovalNeeded is configured", async () => {
       const rail = fakeRail();
       const history = new FakeHistory();
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       await expect(pay(baseInput)).rejects.toThrow(/onApprovalNeeded/);
     });
@@ -351,6 +365,7 @@ describe("blacktea()", () => {
       };
       const onApprovalNeeded = vi.fn(() => new Promise<never>(() => {}));
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy: policyShort,
         history,
@@ -377,6 +392,7 @@ describe("blacktea()", () => {
         return { decision: "approve" as const };
       });
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy,
         history,
@@ -584,6 +600,27 @@ describe("blacktea()", () => {
     it("throws ValidationError on zero max_amount", async () => {
       await expect(makePay()({ ...baseInput, max_amount: 0 })).rejects.toThrow(/max_amount/);
     });
+
+    it("throws ValidationError on an empty trigger", async () => {
+      await expect(makePay()({ ...baseInput, trigger: "" })).rejects.toThrow(ValidationError);
+    });
+
+    it("throws ValidationError on a trigger over 500 characters", async () => {
+      await expect(makePay()({ ...baseInput, trigger: "x".repeat(501) })).rejects.toThrow(
+        ValidationError,
+      );
+    });
+
+    it("throws ValidationError on a non-string trigger", async () => {
+      await expect(makePay()({ ...baseInput, trigger: 5 as never })).rejects.toThrow(
+        ValidationError,
+      );
+    });
+
+    it("accepts a trigger of exactly 500 characters", async () => {
+      const intent = await makePay()({ ...baseInput, trigger: "x".repeat(500) });
+      expect(intent.status).toBe("completed");
+    });
   });
 
   describe("constructor validation", () => {
@@ -641,7 +678,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_lt: 10 }, then: { approve: true } }],
         default: { approval: "callback" },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const result = await pay.stage(baseInput);
 
@@ -660,7 +703,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { reject: "too_expensive" } }],
         default: { approve: true },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const result = await pay.stage(baseInput);
 
@@ -679,7 +728,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
         default: { approve: true },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const result = await pay.stage(baseInput);
 
@@ -700,7 +755,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const rail = fakeRail(); // preflight amount is 4
       const history = new FakeHistory();
       const policy: Policy = { rules: [], default: { approve: true } };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const result = await pay.stage({ ...baseInput, max_amount: 1 });
 
@@ -719,7 +780,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
         default: { approve: true },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const staged = await pay.stage(baseInput);
       if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
@@ -745,7 +812,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
         default: { approve: true },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const staged = await pay.stage(baseInput);
       if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
@@ -768,7 +841,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         default: { approve: true },
       };
       const audit = collectingAudit();
-      const pay = blacktea({ source: rail, policy, history, audit: audit.sink });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: audit.sink,
+      });
 
       const staged = await pay.stage(baseInput);
       if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
@@ -801,6 +880,7 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const rail = fakeRail();
       const history = new FakeHistory();
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy: expiringPolicy(60),
         history,
@@ -824,6 +904,7 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const history = new FakeHistory();
       const audit = collectingAudit();
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy: expiringPolicy(60),
         history,
@@ -853,6 +934,7 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const rail = fakeRail();
       const history = new FakeHistory();
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: rail,
         policy: expiringPolicy(60),
         history,
@@ -922,7 +1004,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const rail = slowRail();
       const history = new FakeHistory();
       const policy: Policy = { rules: [], default: { approve: true } };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       // Fire two concurrent calls sharing one idempotency_key. Both must
       // reach settleAndRecord before either resolves; only one settle.
@@ -955,7 +1043,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
         default: { approve: true },
       };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const staged = await pay.stage(baseInput);
       if (staged.outcome !== "approval_required") throw new Error("expected approval_required");
@@ -1000,6 +1094,7 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       };
       const policy: Policy = { rules: [], default: { approve: true } };
       const pay = blacktea({
+        approvals: noopApprovals(),
         source: failingRail,
         policy,
         history: new FakeHistory(),
@@ -1028,7 +1123,13 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       const rail = slowRail();
       const history = new FakeHistory();
       const policy: Policy = { rules: [], default: { approve: true } };
-      const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+      const pay = blacktea({
+        source: rail,
+        policy,
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
 
       const p1 = pay(baseInput, { idempotency_key: "key_one" });
       const p2 = pay(baseInput, { idempotency_key: "key_two" });

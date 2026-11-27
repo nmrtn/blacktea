@@ -39,10 +39,15 @@
 import { randomUUID } from "node:crypto";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
+import type { ApprovalRecord, ApprovalState } from "./approval-record.js";
+import { FileBackedApprovalStore } from "./approvals/file-backed.js";
+import { computeParamsHash } from "./approvals/params-hash.js";
+import { sanitizeForDisplay } from "./display.js";
 import {
   ApprovalTimeoutError,
   NoEligibleRailError,
   PolicyDeniedError,
+  QuoteChangedError,
   RailUnavailableError,
   ValidationError,
 } from "./errors.js";
@@ -53,6 +58,8 @@ import { evaluatePolicy } from "./policy/evaluator.js";
 import { loadPolicy } from "./policy/load.js";
 import type { Policy } from "./policy/schema.js";
 import type {
+  ApprovalRequest,
+  ApprovalStore,
   AuditEvent,
   AuditSink,
   HistoryStore,
@@ -77,6 +84,11 @@ export interface BlackteaOptions {
   audit?: AuditSink;
   history?: HistoryStore;
   store?: IdempotencyStore;
+  /**
+   * Where approval receipts go. Default: ./.blacktea/approvals.jsonl
+   * (./.blacktea/approvals-dryrun.jsonl under dry_run).
+   */
+  approvals?: ApprovalStore;
   dry_run?: boolean;
 }
 
@@ -112,6 +124,108 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     });
   const dryRun = options.dry_run ?? false;
   const onApprovalNeeded = options.onApprovalNeeded;
+  const approvals =
+    options.approvals ??
+    new FileBackedApprovalStore({
+      path: dryRun ? "./.blacktea/approvals-dryrun.jsonl" : "./.blacktea/approvals.jsonl",
+    });
+
+  // Latest receipt snapshot for each intent stage() held, so complete() can
+  // advance it.
+  const stagedReceipts = new Map<string, ApprovalRecord>();
+
+  // ---------- approval receipts ----------
+  //
+  // A receipt is a series of full snapshots, one per state change, appended
+  // to the approval store and mirrored to the audit sink. Writing `staged`
+  // or `approved` fails closed (the error propagates before the rail is
+  // called). Any later state fails open: the caller gets the outcome it
+  // would otherwise get and the audit records approval_record_write_failed.
+
+  function mintReceipt(args: {
+    intentId: string;
+    channel: ApprovalRecord["channel"];
+    input: PayInput;
+    opts: PayOptions;
+    requirement: PaymentRequirement;
+    ruleFired: string;
+    expiresAt: string;
+  }): ApprovalRecord {
+    const { input, requirement } = args;
+    const now = new Date().toISOString();
+    return {
+      intent_id: args.intentId,
+      created_at: now,
+      updated_at: now,
+      state: "staged",
+      channel: args.channel,
+      mcp_server: args.opts.origin?.mcp_server ?? null,
+      tool: args.opts.origin?.tool ?? null,
+      actor: null,
+      amount: requirement.amount,
+      currency: requirement.currency,
+      ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
+      recipient_url: input.url,
+      intent: input.intent,
+      trigger: input.trigger ?? null,
+      rule_fired: args.ruleFired,
+      decision_reason: null,
+      params_hash: computeParamsHash(input, requirement),
+      expires_at: args.expiresAt,
+    };
+  }
+
+  async function writeReceipt(record: ApprovalRecord): Promise<void> {
+    if (record.state === "staged" || record.state === "approved") {
+      await approvals.append(record);
+      emit(audit, "approval_record", record.intent_id, { ...record });
+      return;
+    }
+    try {
+      await approvals.append(record);
+      emit(audit, "approval_record", record.intent_id, { ...record });
+    } catch (err) {
+      emit(audit, "approval_record_write_failed", record.intent_id, {
+        state: record.state,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  async function advanceReceipt(
+    record: ApprovalRecord,
+    state: ApprovalState,
+    decisionReason: string | null = null,
+  ): Promise<ApprovalRecord> {
+    const next: ApprovalRecord = {
+      ...record,
+      state,
+      decision_reason: decisionReason,
+      updated_at: new Date().toISOString(),
+    };
+    await writeReceipt(next);
+    if (stagedReceipts.has(next.intent_id)) stagedReceipts.set(next.intent_id, next);
+    return next;
+  }
+
+  // Approved -> settle -> settled | failed. The approved snapshot is written
+  // before the rail is called.
+  async function settleWithReceipt(
+    args: SettleArgs,
+    record: ApprovalRecord | undefined,
+  ): Promise<PaymentIntent> {
+    if (!record) return settleAndRecord(args);
+    const approved = await advanceReceipt(record, "approved");
+    let intent: PaymentIntent;
+    try {
+      intent = await settleAndRecord(args);
+    } catch (err) {
+      await advanceReceipt(approved, "failed");
+      throw err;
+    }
+    await advanceReceipt(approved, "settled");
+    return intent;
+  }
 
   // ---------- in-flight serialization (concurrent-settle guard) ----------
   //
@@ -153,6 +267,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       url: input.url,
       intent: input.intent,
       max_amount: input.max_amount,
+      ...(input.trigger !== undefined ? { trigger: input.trigger } : {}),
     });
 
     // Idempotency first. If we have already settled this exact key, return
@@ -293,6 +408,10 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         receipt = settled.receipt;
         data = settled.data;
       } catch (err) {
+        if (err instanceof QuoteChangedError) {
+          emit(audit, "payment_failed", intentId, { rail: rail.name, error: "quote_changed" });
+          throw err;
+        }
         emit(audit, "payment_failed", intentId, {
           rail: rail.name,
           error: (err as Error).message,
@@ -331,29 +450,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     if (prep.kind === "rejected") throw new PolicyDeniedError(prep.reason, prep.ruleFired);
 
     const { intentId, idempotencyKey, rail, requirement, policyInput, decision } = prep;
-
-    if (decision.kind === "approval") {
-      const ok = await runApprovalFlow({
-        intentId,
-        policyInput,
-        decision,
-        onApprovalNeeded,
-        audit,
-      });
-      if (!ok.approved) {
-        if (ok.timed_out) {
-          emit(audit, "approval_timed_out", intentId, {});
-          throw new ApprovalTimeoutError(intentId);
-        }
-        emit(audit, "payment_denied", intentId, {
-          reason: ok.reason ?? "approval_denied",
-          rule_fired: decision.rule_fired,
-        });
-        throw new PolicyDeniedError(ok.reason ?? "approval_denied", decision.rule_fired);
-      }
-    }
-
-    return settleAndRecord({
+    const settleArgs: SettleArgs = {
       intentId,
       idempotencyKey,
       rail,
@@ -362,7 +459,52 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       ruleFired: decision.rule_fired,
       input,
       opts,
+    };
+
+    if (decision.kind !== "approval") return settleAndRecord(settleArgs);
+
+    if (decision.channel === "callback" && !onApprovalNeeded) {
+      throw new ValidationError(
+        'Policy requires "callback" approval but blacktea() was not given onApprovalNeeded. For MCP servers and chat agents, use pay.stage()/pay.complete() instead.',
+      );
+    }
+
+    const expiresAt = new Date(Date.now() + decision.timeout_seconds * 1000).toISOString();
+    const record = mintReceipt({
+      intentId,
+      channel: decision.channel,
+      input,
+      opts,
+      requirement,
+      ruleFired: decision.rule_fired,
+      expiresAt,
     });
+    await writeReceipt(record);
+
+    const ok = await runApprovalFlow({
+      intentId,
+      policyInput,
+      trigger: input.trigger,
+      decision,
+      expiresAt,
+      onApprovalNeeded,
+      audit,
+    });
+    if (!ok.approved) {
+      if (ok.timed_out) {
+        await advanceReceipt(record, "expired");
+        emit(audit, "approval_timed_out", intentId, {});
+        throw new ApprovalTimeoutError(intentId);
+      }
+      await advanceReceipt(record, "denied", ok.reason ?? null);
+      emit(audit, "payment_denied", intentId, {
+        reason: ok.reason ?? "approval_denied",
+        rule_fired: decision.rule_fired,
+      });
+      throw new PolicyDeniedError(ok.reason ?? "approval_denied", decision.rule_fired);
+    }
+
+    return settleWithReceipt(settleArgs, record);
   }
 
   // ---------- two-phase: stage ----------
@@ -388,6 +530,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         ...(requirement.recipient_wallet ? { recipient_wallet: requirement.recipient_wallet } : {}),
         recipient_url: input.url,
         intent: input.intent,
+        ...(input.trigger !== undefined ? { trigger: input.trigger } : {}),
         rule_fired: decision.rule_fired,
         expires_at: expiresAt,
         _input: input,
@@ -396,6 +539,17 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         _railName: rail.name,
         _idempotencyKey: idempotencyKey,
       };
+      const record = mintReceipt({
+        intentId,
+        channel: "staged",
+        input,
+        opts,
+        requirement,
+        ruleFired: decision.rule_fired,
+        expiresAt,
+      });
+      await writeReceipt(record);
+      stagedReceipts.set(intentId, record);
       emit(audit, "approval_staged", intentId, {
         amount: requirement.amount,
         currency: requirement.currency,
@@ -425,9 +579,14 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     staged: StagedIntent,
     decision: "approve" | "reject",
   ): Promise<PaymentIntent> {
+    // Undefined when the intent was staged by another blacktea() instance;
+    // then there is no receipt to advance.
+    const record = stagedReceipts.get(staged.intent_id);
+
     if (decision === "reject") {
       // A late reject is still a reject. The payment was never going to
       // settle anyway, so we accept it without checking expiry.
+      if (record) await advanceReceipt(record, "denied");
       emit(audit, "approval_received", staged.intent_id, { decision: "deny" });
       emit(audit, "payment_denied", staged.intent_id, {
         reason: "approval_denied",
@@ -441,6 +600,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     // policy's timeout_seconds is meaningless on the two-phase / MCP path.
     const expiresAtMs = Date.parse(staged.expires_at);
     if (Number.isFinite(expiresAtMs) && Date.now() > expiresAtMs) {
+      if (record) await advanceReceipt(record, "expired");
       emit(audit, "approval_timed_out", staged.intent_id, {
         expires_at: staged.expires_at,
       });
@@ -464,16 +624,19 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         : {}),
     };
 
-    return settleAndRecord({
-      intentId: staged.intent_id,
-      idempotencyKey: staged._idempotencyKey,
-      rail,
-      requirement: staged._requirement,
-      policyInput,
-      ruleFired: staged.rule_fired,
-      input: staged._input,
-      opts: staged._opts,
-    });
+    return settleWithReceipt(
+      {
+        intentId: staged.intent_id,
+        idempotencyKey: staged._idempotencyKey,
+        rail,
+        requirement: staged._requirement,
+        policyInput,
+        ruleFired: staged.rule_fired,
+        input: staged._input,
+        opts: staged._opts,
+      },
+      record,
+    );
   }
 
   return Object.assign(pay, { stage, complete });
@@ -495,6 +658,12 @@ function validateInput(input: PayInput): void {
     throw new ValidationError(
       `Invalid max_amount: ${input.max_amount}. Must be a positive number when provided.`,
     );
+  }
+  if (
+    input.trigger !== undefined &&
+    (typeof input.trigger !== "string" || input.trigger.length < 1 || input.trigger.length > 500)
+  ) {
+    throw new ValidationError("Invalid trigger. Must be a string of 1 to 500 characters.");
   }
 }
 
@@ -532,12 +701,13 @@ interface ApprovalOutcome {
 async function runApprovalFlow(args: {
   intentId: string;
   policyInput: PaymentIntentInput;
+  trigger: string | undefined;
   decision: { channel: "console" | "callback"; timeout_seconds: number; rule_fired: string };
+  expiresAt: string;
   onApprovalNeeded: OnApprovalNeeded | undefined;
   audit: AuditSink;
 }): Promise<ApprovalOutcome> {
-  const { intentId, policyInput, decision, onApprovalNeeded, audit } = args;
-  const expiresAt = new Date(Date.now() + decision.timeout_seconds * 1000).toISOString();
+  const { intentId, policyInput, trigger, decision, expiresAt, onApprovalNeeded, audit } = args;
 
   emit(audit, "approval_requested", intentId, {
     channel: decision.channel,
@@ -552,6 +722,7 @@ async function runApprovalFlow(args: {
       currency: policyInput.currency,
       url: policyInput.url,
       intent: policyInput.intent,
+      trigger,
       timeoutMs: decision.timeout_seconds * 1000,
     });
   }
@@ -562,13 +733,14 @@ async function runApprovalFlow(args: {
     );
   }
 
-  const request = {
+  const request: ApprovalRequest = {
     intent_id: intentId,
     amount: policyInput.amount,
     currency: policyInput.currency,
     recipient_wallet: policyInput.recipient_wallet,
     recipient_url: policyInput.url,
     intent: policyInput.intent,
+    ...(trigger !== undefined ? { trigger } : {}),
     rule_fired: decision.rule_fired,
     expires_at: expiresAt,
   };
@@ -598,14 +770,19 @@ async function awaitConsoleApproval(args: {
   currency: string;
   url: string;
   intent: string;
+  trigger: string | undefined;
   timeoutMs: number;
 }): Promise<ApprovalOutcome> {
+  // intent and trigger come from the agent: strip control characters so
+  // they cannot forge extra prompt lines or terminal sequences.
+  const triggerLine =
+    args.trigger !== undefined ? `\n  trigger:   ${sanitizeForDisplay(args.trigger)}` : "";
   // eslint-disable-next-line no-console
   console.log(`
 [blacktea] Approval required for payment ${args.intentId}
   amount:    ${args.amount} ${args.currency}
   recipient: ${args.url}
-  reason:    ${args.intent}
+  reason:    ${sanitizeForDisplay(args.intent)}${triggerLine}
 `);
 
   const rl = createInterface({ input: stdin, output: stdout });
