@@ -58,6 +58,13 @@ class FakeHistory implements HistoryStore {
   }
 }
 
+/** A history store whose writes fail, to break the pipeline after the rail settled. */
+class BrokenHistory extends FakeHistory {
+  override async record(): Promise<void> {
+    throw new Error("history disk full");
+  }
+}
+
 function match(e: HistoryRecord, filter: HistoryFilter | undefined): boolean {
   if (!filter) return true;
   if (filter.wallet && e.recipient_wallet !== filter.wallet) return false;
@@ -129,6 +136,7 @@ function setup(
       reason?: string;
     }>;
     dry_run?: boolean;
+    history?: HistoryStore;
   } = {},
 ) {
   const approvals = new MemoryApprovals();
@@ -140,7 +148,7 @@ function setup(
   const pay = blacktea({
     source: rail,
     policy: opts.policy ?? ASK,
-    history: new FakeHistory(),
+    history: opts.history ?? new FakeHistory(),
     audit: (e) => audit.push(e),
     approvals,
     onApprovalNeeded,
@@ -227,6 +235,19 @@ describe("approval receipts: pay() with the callback channel", () => {
     expect(failed?.data.error).toBe("quote_changed");
   });
 
+  it("a failure after the rail settled still ends in settled and the error propagates", async () => {
+    const { pay, approvals, rail } = setup({ history: new BrokenHistory() });
+    await expect(pay(input)).rejects.toThrow("history disk full");
+    expect(states(approvals)).toEqual(["staged", "approved", "settled"]);
+    expect(rail.settleCalls).toHaveLength(1);
+  });
+
+  it("under dry_run a failure after the simulated settle also ends in settled", async () => {
+    const { pay, approvals } = setup({ history: new BrokenHistory(), dry_run: true });
+    await expect(pay(input)).rejects.toThrow("history disk full");
+    expect(states(approvals)).toEqual(["staged", "approved", "settled"]);
+  });
+
   it("dry_run still writes staged, approved, settled", async () => {
     const { pay, approvals, rail } = setup({ dry_run: true });
     await pay(input);
@@ -245,6 +266,15 @@ describe("approval receipts: stage() / complete()", () => {
     expect(states(approvals)).toEqual(["staged", "approved", "settled"]);
     expect(approvals.records.every((r) => r.channel === "staged")).toBe(true);
     expect(approvals.records.every((r) => r.intent_id === res.staged.intent_id)).toBe(true);
+  });
+
+  it("complete(approve) ends in settled when a step after the rail settle throws", async () => {
+    const { pay, approvals, rail } = setup({ history: new BrokenHistory() });
+    const res = await pay.stage(input);
+    if (res.outcome !== "approval_required") throw new Error("expected approval_required");
+    await expect(pay.complete(res.staged, "approve")).rejects.toThrow("history disk full");
+    expect(states(approvals)).toEqual(["staged", "approved", "settled"]);
+    expect(rail.settleCalls).toHaveLength(1);
   });
 
   it("complete(reject) writes staged, denied with a null reason", async () => {

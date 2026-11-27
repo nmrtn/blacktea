@@ -216,15 +216,12 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   ): Promise<PaymentIntent> {
     if (!record) return settleAndRecord(args);
     const approved = await advanceReceipt(record, "approved");
-    let intent: PaymentIntent;
-    try {
-      intent = await settleAndRecord(args);
-    } catch (err) {
-      await advanceReceipt(approved, "failed");
-      throw err;
-    }
-    await advanceReceipt(approved, "settled");
-    return intent;
+    const outcome = await settleOnce(args);
+    // `failed` only when the rail did not settle. A later step failing
+    // (history, idempotency cache) still leaves the money moved.
+    await advanceReceipt(approved, outcome.ok || outcome.railSettled ? "settled" : "failed");
+    if (outcome.ok) return outcome.intent;
+    throw outcome.error;
   }
 
   // ---------- in-flight serialization (concurrent-settle guard) ----------
@@ -235,9 +232,9 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   // yet), so without this guard both would settle on the rail. Bad for a
   // spending-control product. With the guard, the first caller registers a
   // Promise; later concurrent callers await it and return the same
-  // PaymentIntent. The map cleans up on resolve OR reject so failures
-  // propagate to every awaiter and the slot is reclaimable on retry.
-  const inFlight = new Map<string, Promise<PaymentIntent>>();
+  // outcome. Failures propagate to every awaiter and the slot is freed
+  // once the settle ends, so it is reclaimable on retry.
+  const inFlight = new Map<string, Promise<SettleOutcome>>();
 
   // ---------- shared pipeline: prepare ----------
 
@@ -357,13 +354,27 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     opts: PayOptions;
   };
 
+  // How a settle ended. railSettled says whether money moved (or, under
+  // dry_run, the simulated settle ran) before any error, so receipts never
+  // say `failed` for a payment the rail completed.
+  type SettleOutcome =
+    | { ok: true; intent: PaymentIntent }
+    | { ok: false; error: unknown; railSettled: boolean };
+
   async function settleAndRecord(args: SettleArgs): Promise<PaymentIntent> {
+    const outcome = await settleOnce(args);
+    if (outcome.ok) return outcome.intent;
+    throw outcome.error;
+  }
+
+  function settleOnce(args: SettleArgs): Promise<SettleOutcome> {
     const { idempotencyKey } = args;
     // Concurrent-settle guard. The sequential retry case is handled by the
     // cache check up in prepare(); this catches the case where two callers
     // race through the same key, both find an empty cache, and both reach
-    // settleAndRecord. The first caller's Promise is registered; later
-    // concurrent callers await it and resolve to the same PaymentIntent.
+    // settleOnce. The first caller's Promise is registered; later
+    // concurrent callers await it and get the same outcome (the same
+    // PaymentIntent, or the same error).
     const existing = inFlight.get(idempotencyKey);
     if (existing) {
       emit(audit, "idempotency_concurrent_hit", args.intentId, {
@@ -373,22 +384,31 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     }
     const promise = doSettleAndRecord(args);
     inFlight.set(idempotencyKey, promise);
-    // Clean up on resolve AND reject so a failed settle leaves the slot
-    // reclaimable for a subsequent retry, and so concurrent awaiters all
-    // see the same failure rather than hanging on a stale Promise. Using
-    // .then(cleanup, cleanup) (not .finally) so the cleanup chain doesn't
-    // surface as a floating unhandled rejection when the rail throws:
-    // .finally would propagate the rejection on a Promise nobody awaits;
-    // .then with both callbacks returning void produces a resolved Promise
-    // and the caller's await on `promise` remains the only rejection sink.
-    const cleanup = () => {
+    // The outcome Promise never rejects (errors are carried in it), so
+    // cleanup cannot surface as a floating unhandled rejection. The slot is
+    // freed once settled so a failed settle can be retried.
+    promise.then(() => {
       inFlight.delete(idempotencyKey);
-    };
-    promise.then(cleanup, cleanup);
+    });
     return promise;
   }
 
-  async function doSettleAndRecord(args: SettleArgs): Promise<PaymentIntent> {
+  async function doSettleAndRecord(args: SettleArgs): Promise<SettleOutcome> {
+    let railSettled = false;
+    try {
+      const intent = await settleThenRecord(args, () => {
+        railSettled = true;
+      });
+      return { ok: true, intent };
+    } catch (error) {
+      return { ok: false, error, railSettled };
+    }
+  }
+
+  async function settleThenRecord(
+    args: SettleArgs,
+    markRailSettled: () => void,
+  ): Promise<PaymentIntent> {
     const { intentId, idempotencyKey, rail, requirement, policyInput, ruleFired, input, opts } =
       args;
 
@@ -419,6 +439,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         throw new RailUnavailableError(rail.name, (err as Error).message);
       }
     }
+    markRailSettled();
 
     await history.record({
       ts: receipt.paid_at,
