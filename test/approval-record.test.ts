@@ -11,7 +11,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { blacktea } from "../src/agent.js";
 import type { ApprovalRecord, ApprovalState } from "../src/approval-record.js";
 import {
+  ApprovalInvalidError,
   ApprovalTimeoutError,
+  NoEligibleRailError,
   QuoteChangedError,
   RailUnavailableError,
   ValidationError,
@@ -112,8 +114,10 @@ function fakeRail(
 class MemoryApprovals implements ApprovalStore {
   records: ApprovalRecord[] = [];
   failOn: ApprovalState[] = [];
+  /** What append() throws for a state in failOn. */
+  failWith: unknown = new Error("disk full");
   async append(r: ApprovalRecord) {
-    if (this.failOn.includes(r.state)) throw new Error("disk full");
+    if (this.failOn.includes(r.state)) throw this.failWith;
     this.records.push(structuredClone(r));
   }
 }
@@ -137,6 +141,8 @@ function setup(
     }>;
     dry_run?: boolean;
     history?: HistoryStore;
+    /** Called before each audit event is collected; may throw. */
+    auditHook?: (e: AuditEvent) => void;
   } = {},
 ) {
   const approvals = new MemoryApprovals();
@@ -149,7 +155,10 @@ function setup(
     source: rail,
     policy: opts.policy ?? ASK,
     history: opts.history ?? new FakeHistory(),
-    audit: (e) => audit.push(e),
+    audit: (e) => {
+      opts.auditHook?.(e);
+      audit.push(e);
+    },
     approvals,
     onApprovalNeeded,
     dry_run: opts.dry_run,
@@ -397,6 +406,29 @@ describe("approval receipts: audit mirror and write failures", () => {
     expect(failed?.data).toEqual({ state: "settled", error: "disk full" });
   });
 
+  it("reports a non-Error thrown by the store as a string", async () => {
+    const { pay, approvals, audit } = setup();
+    approvals.failOn = ["settled"];
+    approvals.failWith = "quota exceeded";
+    const intent = await pay(input);
+    expect(intent.status).toBe("completed");
+    const failed = audit.find((e) => e.event === "approval_record_write_failed");
+    expect(failed?.data).toEqual({ state: "settled", error: "quota exceeded" });
+  });
+
+  it("a throwing audit sink neither aborts the payment nor reads as a store failure", async () => {
+    const { pay, approvals, audit, rail } = setup({
+      auditHook: (e) => {
+        if (e.event === "approval_record") throw new Error("sink down");
+      },
+    });
+    const intent = await pay(input);
+    expect(intent.status).toBe("completed");
+    expect(rail.settleCalls).toHaveLength(1);
+    expect(states(approvals)).toEqual(["staged", "approved", "settled"]);
+    expect(audit.some((e) => e.event === "approval_record_write_failed")).toBe(false);
+  });
+
   it("never stores the request body or headers", async () => {
     const { pay, approvals, audit } = setup();
     await pay({ ...input, body: { secret: "s3cr3t" }, headers: { authorization: "tok" } });
@@ -412,6 +444,167 @@ describe("approval receipts: audit mirror and write failures", () => {
     await expect(pay({ ...input, body })).rejects.toThrow(ValidationError);
     expect(onApprovalNeeded).not.toHaveBeenCalled();
     expect(approvals.records).toEqual([]);
+  });
+});
+
+describe("approval receipts: complete() is bound to the request and single-use", () => {
+  function held(opts: Parameters<typeof setup>[0] = {}) {
+    const ctx = setup(opts);
+    const stageHeld = async () => {
+      const res = await ctx.pay.stage(input);
+      if (res.outcome !== "approval_required") throw new Error("expected approval_required");
+      return { staged: res.staged };
+    };
+    return { ...ctx, stageHeld };
+  }
+
+  it("refuses when the staged amount was changed", async () => {
+    const { pay, approvals, audit, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    const minted = approvals.records[0]?.params_hash;
+    staged._requirement.amount = 9999;
+    const err = await pay.complete(staged, "approve").catch((e) => e);
+    expect(err).toBeInstanceOf(ApprovalInvalidError);
+    expect(err).toMatchObject({
+      code: "approval_invalid",
+      reason: "params_changed",
+      intent_id: staged.intent_id,
+    });
+    expect(rail.settleCalls).toHaveLength(0);
+    expect(states(approvals)).toEqual(["staged", "failed"]);
+    const mismatch = audit.find((e) => e.event === "approval_mismatch");
+    expect(mismatch?.intent_id).toBe(staged.intent_id);
+    expect(mismatch?.data.expected).toBe(minted);
+    expect(mismatch?.data.actual).toMatch(/^sha256:jcs-v1:[0-9a-f]{64}$/);
+    expect(mismatch?.data.actual).not.toBe(minted);
+  });
+
+  it("refuses when the staged url was changed", async () => {
+    const { pay, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    staged._input.url = "https://evil.test/";
+    await expect(pay.complete(staged, "approve")).rejects.toMatchObject({
+      reason: "params_changed",
+    });
+    expect(rail.settleCalls).toHaveLength(0);
+  });
+
+  it("a mismatch consumes the approval", async () => {
+    const { pay, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    const original = staged._requirement.amount;
+    staged._requirement.amount = 9999;
+    await expect(pay.complete(staged, "approve")).rejects.toMatchObject({
+      reason: "params_changed",
+    });
+    staged._requirement.amount = original;
+    await expect(pay.complete(staged, "approve")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    expect(rail.settleCalls).toHaveLength(0);
+  });
+
+  it("refuses a second sequential approve", async () => {
+    const { pay, approvals, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    await pay.complete(staged, "approve");
+    await expect(pay.complete(staged, "approve")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    expect(rail.settleCalls).toHaveLength(1);
+    expect(states(approvals)).toEqual(["staged", "approved", "settled"]);
+  });
+
+  it("refuses approve after reject", async () => {
+    const { pay, approvals, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    await pay.complete(staged, "reject");
+    await expect(pay.complete(staged, "approve")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    expect(rail.settleCalls).toHaveLength(0);
+    expect(states(approvals)).toEqual(["staged", "denied"]);
+  });
+
+  it("refuses approve after an expired approve", async () => {
+    vi.useFakeTimers();
+    const { pay, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    vi.setSystemTime(Date.parse(staged.expires_at) + 1000);
+    await expect(pay.complete(staged, "approve")).rejects.toThrow(ApprovalTimeoutError);
+    await expect(pay.complete(staged, "approve")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    expect(rail.settleCalls).toHaveLength(0);
+  });
+
+  it("refuses a staged intent issued by another factory", async () => {
+    const { stageHeld } = held();
+    const other = setup();
+    const { staged } = await stageHeld();
+    await expect(other.pay.complete(staged, "approve")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    await expect(other.pay.complete(staged, "reject")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    expect(other.rail.settleCalls).toHaveLength(0);
+    expect(other.approvals.records).toEqual([]);
+  });
+
+  it("concurrent duplicate approves still share one settlement", async () => {
+    const { pay, approvals, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    const [a, b] = await Promise.all([
+      pay.complete(staged, "approve"),
+      pay.complete(staged, "approve"),
+    ]);
+    expect(a.receipt).toEqual(b.receipt);
+    expect(rail.settleCalls).toHaveLength(1);
+    expect(states(approvals)).toEqual(["staged", "approved", "settled"]);
+  });
+
+  it("a reject racing an in-flight approve is refused", async () => {
+    const { pay, approvals, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    const approving = pay.complete(staged, "approve");
+    await expect(pay.complete(staged, "reject")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    const intent = await approving;
+    expect(intent.status).toBe("completed");
+    expect(rail.settleCalls).toHaveLength(1);
+    expect(states(approvals)).toEqual(["staged", "approved", "settled"]);
+  });
+
+  it("a failed settle consumes the approval", async () => {
+    let calls = 0;
+    const rail = fakeRail("x402", {
+      settle: async () => {
+        calls += 1;
+        throw new Error("signature rejected");
+      },
+    });
+    const { pay, approvals, stageHeld } = held({ rail });
+    const { staged } = await stageHeld();
+    await expect(pay.complete(staged, "approve")).rejects.toBeInstanceOf(RailUnavailableError);
+    await expect(pay.complete(staged, "approve")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    expect(calls).toBe(1);
+    expect(states(approvals)).toEqual(["staged", "approved", "failed"]);
+  });
+
+  it("a missing rail writes failed and consumes the approval", async () => {
+    const { pay, approvals, rail, stageHeld } = held();
+    const { staged } = await stageHeld();
+    staged._railName = "gone";
+    await expect(pay.complete(staged, "approve")).rejects.toBeInstanceOf(NoEligibleRailError);
+    expect(states(approvals)).toEqual(["staged", "failed"]);
+    await expect(pay.complete(staged, "approve")).rejects.toMatchObject({
+      reason: "unknown_or_consumed",
+    });
+    expect(rail.settleCalls).toHaveLength(0);
   });
 });
 

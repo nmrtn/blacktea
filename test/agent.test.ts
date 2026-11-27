@@ -1043,11 +1043,16 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
         rules: [{ if: { amount_gte: 1 }, then: { approval: "callback" } }],
         default: { approve: true },
       };
+      const states: string[] = [];
       const pay = blacktea({
         source: rail,
         policy,
         history,
-        approvals: noopApprovals(),
+        approvals: {
+          append: async (r) => {
+            states.push(r.state);
+          },
+        },
         audit: () => {},
       });
 
@@ -1069,6 +1074,8 @@ describe("two-phase API (pay.stage / pay.complete)", () => {
       expect(i2.status).toBe("completed");
       expect(i1.id).toBe(i2.id);
       expect(history.events).toHaveLength(1);
+      // One receipt, advanced once: no duplicate approved or settled snapshot.
+      expect(states).toEqual(["staged", "approved", "settled"]);
     });
 
     it("propagates a rejection from settle to BOTH concurrent callers without unhandled rejections", async () => {
