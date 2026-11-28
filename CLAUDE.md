@@ -44,6 +44,19 @@ npm run typecheck
 npm run build
 ```
 
+The public site (`site/`, served at https://nmrtn.github.io/blacktea/) is
+plain files with three scripts:
+
+```bash
+npm run site:theme          # copy brand/theme.css and the mark into site/
+npm run site:engine         # rebundle the playground engine after policy changes
+npm run site:deploy         # push site/ to the gh-pages branch (publishes it)
+```
+
+`npm test` fails when the committed theme copy or engine bundle is stale.
+`site:deploy` publishes whatever is committed on the current branch, so run
+it from an up-to-date `main`.
+
 Single test file: `npm test -- src/policy/evaluator.test.ts`.
 Single test name: `npm test -- -t "rejects sanctioned wallets"`.
 
