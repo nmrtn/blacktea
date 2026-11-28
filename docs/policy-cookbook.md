@@ -101,6 +101,8 @@ Structured form (same meaning, more explicit):
 
 The `would_spend` operator looks forward. It adds the current payment to the historical sum, then compares. A cap that only checked the past would fire one transaction late.
 
+The sum also includes payments that have passed the policy but are not finished: ones still settling, and ones waiting for a human approval. So payments made in parallel, or several held and approved later, cannot add up past the cap. A payment stops counting when it is denied, fails, or its approval window passes. This holds inside one process; separate processes sharing a history file do not see each other's unfinished payments.
+
 History is stored in a file (default `./.blacktea/history.jsonl`) so the cap survives process restarts.
 
 ## Case 5: time-of-day approval

@@ -1090,3 +1090,246 @@ describe("per-url limits against the file-backed history", () => {
     }
   });
 });
+
+describe("spending limits across payments in flight", () => {
+  // Every fakeRail payment costs 4, so a cap of 10 has room for two.
+  const cappedAt10 = (otherwise: Policy["default"] = { approve: true }): Policy => ({
+    rules: [{ if: { would_spend: { window_hours: 24, gte: 10 } }, then: { reject: "daily_cap" } }],
+    default: otherwise,
+  });
+
+  /** A fakeRail whose settles stay pending until the test ends each one. */
+  function gatedRail() {
+    const settles: Array<{ succeed: () => void; fail: () => void }> = [];
+    const rail = fakeRail("x402", {
+      settle: (input, req) =>
+        new Promise<SettleResult>((resolve, reject) => {
+          settles.push({
+            succeed: () =>
+              resolve({
+                receipt: {
+                  id: "rail_receipt_id",
+                  amount: req.amount,
+                  currency: req.currency,
+                  rail: "x402",
+                  rail_charge_id: "ch_test_123",
+                  recipient_url: input.url,
+                  recipient_wallet: req.recipient_wallet,
+                  paid_at: new Date().toISOString(),
+                },
+                data: undefined,
+              }),
+            fail: () => reject(new Error("simulated network failure")),
+          });
+        }),
+    });
+    return Object.assign(rail, { settles });
+  }
+
+  /** Lets every call in progress run up to its next network or human wait. */
+  async function flush(): Promise<void> {
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  const spent = (history: FakeHistory) => history.events.reduce((sum, e) => sum + e.amount, 0);
+
+  it("does not let concurrent pay() calls jointly pass a would_spend cap", async () => {
+    const rail = gatedRail();
+    const history = new FakeHistory();
+    const pay = blacktea({ source: rail, policy: cappedAt10(), history, audit: () => {} });
+
+    const all = Promise.allSettled([
+      pay(baseInput, { idempotency_key: "a" }),
+      pay(baseInput, { idempotency_key: "b" }),
+      pay(baseInput, { idempotency_key: "c" }),
+    ]);
+    await flush();
+    for (const settle of rail.settles) settle.succeed();
+    const results = await all;
+
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "rejected"]);
+    expect((results[2] as PromiseRejectedResult).reason).toBeInstanceOf(PolicyDeniedError);
+    expect(rail.settles).toHaveLength(2);
+    expect(spent(history)).toBe(8);
+  });
+
+  it("holds amount_today_gte across concurrent calls too", async () => {
+    const rail = gatedRail();
+    const history = new FakeHistory();
+    const policy: Policy = {
+      rules: [{ if: { amount_today_gte: 10 }, then: { reject: "daily_cap" } }],
+      default: { approve: true },
+    };
+    const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+    const all = Promise.allSettled([pay(baseInput), pay(baseInput), pay(baseInput)]);
+    await flush();
+    for (const settle of rail.settles) settle.succeed();
+    await all;
+
+    expect(spent(history)).toBe(8);
+  });
+
+  it("frees the amount of a payment whose settle failed", async () => {
+    const rail = gatedRail();
+    const history = new FakeHistory();
+    const pay = blacktea({ source: rail, policy: cappedAt10(), history, audit: () => {} });
+
+    const first = pay(baseInput);
+    const second = pay(baseInput);
+    await flush();
+    // Two payments in flight fill the cap.
+    await expect(pay(baseInput)).rejects.toBeInstanceOf(PolicyDeniedError);
+
+    rail.settles[0]?.fail();
+    rail.settles[1]?.succeed();
+    await expect(first).rejects.toThrow(/simulated network failure/);
+    await second;
+
+    // The failed payment no longer counts: 4 recorded + 4 is under the cap.
+    const retry = pay(baseInput);
+    await flush();
+    rail.settles[2]?.succeed();
+    expect((await retry).status).toBe("completed");
+    expect(spent(history)).toBe(8);
+  });
+
+  it("counts a payment in flight only toward the wallet and host it pays", async () => {
+    const rail = gatedRail();
+    const history = new FakeHistory();
+    const policy: Policy = {
+      rules: [
+        {
+          if: { would_spend: { window_hours: 24, gte: 6, by: "url" } },
+          then: { reject: "url_cap" },
+        },
+      ],
+      default: { approve: true },
+    };
+    const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+    const first = pay({ url: "https://api.example.com/v1/a", intent: "first" });
+    const elsewhere = pay({ url: "https://other.example.com/v1/a", intent: "elsewhere" });
+    await flush();
+    await expect(
+      pay({ url: "https://API.example.com/v1/b", intent: "same host" }),
+    ).rejects.toMatchObject({ reason: "url_cap" });
+
+    for (const settle of rail.settles) settle.succeed();
+    await Promise.all([first, elsewhere]);
+    expect(rail.settles).toHaveLength(2);
+  });
+
+  it("still shares one settle between concurrent calls with the same idempotency key", async () => {
+    // One payment of 4 made twice with the same key is one payment: the
+    // second call must not be measured against the first's pending amount.
+    const rail = gatedRail();
+    const history = new FakeHistory();
+    const policy: Policy = {
+      rules: [{ if: { would_spend: { window_hours: 24, gte: 6 } }, then: { reject: "cap" } }],
+      default: { approve: true },
+    };
+    const pay = blacktea({ source: rail, policy, history, audit: () => {} });
+
+    const p1 = pay(baseInput, { idempotency_key: "same" });
+    const p2 = pay(baseInput, { idempotency_key: "same" });
+    await flush();
+    for (const settle of rail.settles) settle.succeed();
+    const [i1, i2] = await Promise.all([p1, p2]);
+
+    expect(i1.id).toBe(i2.id);
+    expect(spent(history)).toBe(4);
+  });
+
+  it("counts a payment waiting for in-process approval until it is denied", async () => {
+    const history = new FakeHistory();
+    const decisions: Array<(d: { decision: "approve" | "deny" }) => void> = [];
+    const pay = blacktea({
+      source: fakeRail(),
+      policy: cappedAt10({ approval: "callback" }),
+      history,
+      approvals: noopApprovals(),
+      onApprovalNeeded: () => new Promise((resolve) => decisions.push(resolve)),
+      audit: () => {},
+    });
+
+    const first = pay(baseInput);
+    const second = pay(baseInput);
+    await flush();
+    await expect(pay(baseInput)).rejects.toMatchObject({ reason: "daily_cap" });
+
+    decisions[0]?.({ decision: "deny" });
+    await expect(first).rejects.toBeInstanceOf(PolicyDeniedError);
+
+    // The denied payment freed its amount, so another can wait for approval.
+    const third = pay(baseInput);
+    await flush();
+    expect(decisions).toHaveLength(3);
+    decisions[1]?.({ decision: "approve" });
+    decisions[2]?.({ decision: "approve" });
+    await Promise.all([second, third]);
+    expect(spent(history)).toBe(8);
+  });
+
+  describe("payments held with stage()", () => {
+    const setup = (timeout_seconds = 300) => {
+      const history = new FakeHistory();
+      const pay = blacktea({
+        source: fakeRail(),
+        policy: cappedAt10({ approval: { via: "callback", timeout_seconds } }),
+        history,
+        approvals: noopApprovals(),
+        audit: () => {},
+      });
+      const hold = async () => {
+        const result = await pay.stage(baseInput);
+        if (result.outcome !== "approval_required") throw new Error(`got ${result.outcome}`);
+        return result.staged;
+      };
+      return { history, pay, hold };
+    };
+
+    it("cannot be staged past the cap and approved together", async () => {
+      const { history, pay, hold } = setup();
+
+      const first = await hold();
+      const second = await hold();
+      expect(await pay.stage(baseInput)).toMatchObject({
+        outcome: "rejected",
+        reason: "daily_cap",
+      });
+
+      await pay.complete(first, "approve");
+      await pay.complete(second, "approve");
+      expect(spent(history)).toBe(8);
+      // Recorded once, not also still counted as held.
+      expect(await pay.stage(baseInput)).toMatchObject({ outcome: "rejected" });
+    });
+
+    it("free their amount when rejected", async () => {
+      const { pay, hold } = setup();
+
+      const first = await hold();
+      await hold();
+      await pay.complete(first, "reject");
+
+      expect((await pay.stage(baseInput)).outcome).toBe("approval_required");
+    });
+
+    it("free their amount once the approval window has passed", async () => {
+      const { pay, hold } = setup(60);
+
+      vi.useFakeTimers();
+      try {
+        await hold();
+        await hold();
+        expect((await pay.stage(baseInput)).outcome).toBe("rejected");
+
+        vi.advanceTimersByTime(61_000);
+        expect((await pay.stage(baseInput)).outcome).toBe("approval_required");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+});

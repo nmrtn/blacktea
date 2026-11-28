@@ -25,7 +25,9 @@
  *   3. Pick a rail.
  *   4. rail.preflight(input)  -> PaymentRequirement (amount, recipient, ...).
  *   5. Enforce max_amount if the customer set one.
- *   6. Evaluate the policy with the full PaymentIntentInput.
+ *   6. Evaluate the policy with the full PaymentIntentInput. A payment
+ *      that passes counts toward spending limits from here on, before it
+ *      is recorded (see "pending spend" below).
  *   7. Branch on decision: allow / approval / reject.
  *   8. If approved, rail.settle(input, requirement)  -> { receipt, data }.
  *   9. Record to history, cache the receipt, emit audit, return.
@@ -53,6 +55,7 @@ import {
   ValidationError,
 } from "./errors.js";
 import { FileBackedHistoryStore } from "./history/file-backed.js";
+import { matchesFilter } from "./history/filter.js";
 import { InMemoryIdempotencyStore } from "./idempotency/in-memory.js";
 import type { Decision } from "./policy/decision.js";
 import { evaluatePolicy } from "./policy/evaluator.js";
@@ -63,6 +66,9 @@ import type {
   ApprovalStore,
   AuditEvent,
   AuditSink,
+  HistoryFilter,
+  HistoryQuery,
+  HistoryRecord,
   HistoryStore,
   IdempotencyStore,
   OnApprovalNeeded,
@@ -158,8 +164,92 @@ export function blacktea(options: BlackteaOptions): PayFunction {
   function pruneStaged(): void {
     const cutoff = Date.now() - STAGED_PRUNE_AFTER_MS;
     for (const [intentId, held] of stagedReceipts) {
-      if (Date.parse(held.record.expires_at) < cutoff) stagedReceipts.delete(intentId);
+      if (Date.parse(held.record.expires_at) < cutoff) {
+        stagedReceipts.delete(intentId);
+        pendingSpends.delete(intentId);
+      }
     }
+  }
+
+  // ---------- pending spend (limits across payments in flight) ----------
+  //
+  // History holds a payment only once it has settled. Until then, every
+  // payment the policy let through (allowed, or held for approval) is kept
+  // here, and the policy evaluator counts it as spent. Without this,
+  // payments that overlap each read history before any of them is recorded
+  // and together pass a would_spend cap. An entry is removed when its
+  // payment is recorded, denied, or fails; a payment held by stage() stops
+  // counting once its approval window has passed.
+  //
+  // This covers one factory in one process. Processes sharing a history
+  // file do not see each other's pending payments.
+  type PendingSpend = HistoryRecord & { idempotencyKey: string };
+  const pendingSpends = new Map<string, PendingSpend>();
+
+  // History as the policy evaluator sees it for one payment: recorded
+  // payments plus the pending ones. Two calls with the same idempotency key
+  // are one payment (at most one settles), so they do not count each other.
+  function historyWithPending(idempotencyKey: string): HistoryQuery {
+    // Read before history is awaited: a payment recorded during that await
+    // is then counted twice (stricter) rather than not at all.
+    const pendingFor = (filter: HistoryFilter | undefined): PendingSpend[] => {
+      const now = Date.now();
+      return [...pendingSpends.values()].filter((spend) => {
+        // Only a payment still waiting in stagedReceipts can expire: once
+        // complete() has claimed it, it counts until it ends.
+        const held = stagedReceipts.get(spend.intent_id);
+        const expired = held !== undefined && Date.parse(held.record.expires_at) < now;
+        return !expired && spend.idempotencyKey !== idempotencyKey && matchesFilter(spend, filter);
+      });
+    };
+    return {
+      async sumSince(opts) {
+        const spends = pendingFor(opts.filter);
+        return (await history.sumSince(opts)) + spends.reduce((sum, s) => sum + s.amount, 0);
+      },
+      async countSince(opts) {
+        const spends = pendingFor(opts.filter);
+        return (await history.countSince(opts)) + spends.length;
+      },
+    };
+  }
+
+  // Policy evaluations run one at a time, and a payment that passes is added
+  // to `pendingSpends` before the next evaluation starts, so each one sees every
+  // payment let through before it. Only the evaluation is serialized (it
+  // reads history, nothing more): settles and approvals still overlap.
+  let lastEvaluation: Promise<unknown> = Promise.resolve();
+
+  function evaluateAndReserve(
+    intentId: string,
+    idempotencyKey: string,
+    policyInput: PaymentIntentInput,
+  ): Promise<Decision> {
+    const evaluation = lastEvaluation.then(async () => {
+      const decision = await evaluatePolicy(
+        policyInput,
+        policy,
+        historyWithPending(idempotencyKey),
+      );
+      // Emitted before the payment is added: if the audit sink throws, the
+      // payment ends here with nothing left pending.
+      emitDecision(intentId, decision);
+      if (decision.kind !== "reject") {
+        pendingSpends.set(intentId, {
+          ts: new Date().toISOString(),
+          amount: policyInput.amount,
+          currency: policyInput.currency,
+          recipient_wallet: policyInput.recipient_wallet,
+          recipient_url: policyInput.url,
+          rule_fired: decision.rule_fired,
+          intent_id: intentId,
+          idempotencyKey,
+        });
+      }
+      return decision;
+    });
+    lastEvaluation = evaluation.catch(() => {});
+    return evaluation;
   }
 
   // complete() calls in progress, by intent_id. A concurrent duplicate
@@ -279,19 +369,21 @@ export function blacktea(options: BlackteaOptions): PayFunction {
 
   // The result of running everything up to and including policy evaluation:
   // a cached hit, a rejection, or a "ready" payment (allow or approval) that
-  // still needs settling.
+  // still needs settling. A "ready" payment is in `pendingSpends`: the caller
+  // removes it once the payment has ended, however it ended.
   type PrepareResult =
     | { kind: "cached"; intent: PaymentIntent }
     | { kind: "rejected"; reason: string; ruleFired: string }
-    | {
-        kind: "ready";
-        intentId: string;
-        idempotencyKey: string;
-        rail: RailAdapter;
-        requirement: PaymentRequirement;
-        policyInput: PaymentIntentInput;
-        decision: Decision;
-      };
+    | ReadyPayment;
+  type ReadyPayment = {
+    kind: "ready";
+    intentId: string;
+    idempotencyKey: string;
+    rail: RailAdapter;
+    requirement: PaymentRequirement;
+    policyInput: PaymentIntentInput;
+    decision: Decision;
+  };
 
   async function prepare(input: PayInput, opts: PayOptions): Promise<PrepareResult> {
     validateInput(input);
@@ -353,7 +445,14 @@ export function blacktea(options: BlackteaOptions): PayFunction {
 
     const policyInput = toPolicyInput(input, requirement);
 
-    const decision = await evaluatePolicy(policyInput, policy, history);
+    const decision = await evaluateAndReserve(intentId, idempotencyKey, policyInput);
+    if (decision.kind === "reject") {
+      return { kind: "rejected", reason: decision.reason, ruleFired: decision.rule_fired };
+    }
+    return { kind: "ready", intentId, idempotencyKey, rail, requirement, policyInput, decision };
+  }
+
+  function emitDecision(intentId: string, decision: Decision): void {
     emit(audit, "policy_evaluated", intentId, {
       decision: decision.kind,
       rule_fired: decision.rule_fired,
@@ -368,10 +467,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         reason: decision.reason,
         rule_fired: decision.rule_fired,
       });
-      return { kind: "rejected", reason: decision.reason, ruleFired: decision.rule_fired };
     }
-
-    return { kind: "ready", intentId, idempotencyKey, rail, requirement, policyInput, decision };
   }
 
   // ---------- shared pipeline: settle + record ----------
@@ -495,6 +591,8 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       rule_fired: ruleFired,
       intent_id: intentId,
     });
+    // Recorded, so no longer pending (it would be counted twice).
+    pendingSpends.delete(intentId);
 
     await idempotency.put(idempotencyKey, receipt, DEFAULT_IDEMPOTENCY_TTL_SECONDS);
 
@@ -514,7 +612,18 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     const prep = await prepare(input, opts);
     if (prep.kind === "cached") return prep.intent;
     if (prep.kind === "rejected") throw new PolicyDeniedError(prep.reason, prep.ruleFired);
+    try {
+      return await payReady(prep, input, opts);
+    } finally {
+      pendingSpends.delete(prep.intentId);
+    }
+  }
 
+  async function payReady(
+    prep: ReadyPayment,
+    input: PayInput,
+    opts: PayOptions,
+  ): Promise<PaymentIntent> {
     const { intentId, idempotencyKey, rail, requirement, policyInput, decision } = prep;
 
     if (decision.kind !== "approval") {
@@ -602,7 +711,27 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     if (prep.kind === "rejected") {
       return { outcome: "rejected", reason: prep.reason, rule_fired: prep.ruleFired };
     }
+    // A held payment stays pending until complete() ends it or its approval
+    // window passes. Anything else has ended by the time stageReady returns
+    // or throws.
+    let result: StageResult | undefined;
+    try {
+      result = await stageReady(prep, input, opts);
+      return result;
+    } finally {
+      if (result?.outcome !== "approval_required") {
+        pendingSpends.delete(prep.intentId);
+        // If holding it threw partway, it must not stay approvable.
+        stagedReceipts.delete(prep.intentId);
+      }
+    }
+  }
 
+  async function stageReady(
+    prep: ReadyPayment,
+    input: PayInput,
+    opts: PayOptions,
+  ): Promise<StageResult> {
     const { intentId, idempotencyKey, rail, requirement, policyInput, decision } = prep;
 
     if (decision.kind === "approval") {
@@ -706,6 +835,7 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     completing.set(intentId, { decision, promise });
     const release = () => {
       completing.delete(intentId);
+      pendingSpends.delete(intentId);
     };
     // Both handlers given, so cleanup cannot surface as an unhandled
     // rejection; callers still see the rejection through `promise`.
