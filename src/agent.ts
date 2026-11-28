@@ -195,6 +195,8 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     const pendingFor = (filter: HistoryFilter | undefined): PendingSpend[] => {
       const now = Date.now();
       return [...pendingSpends.values()].filter((spend) => {
+        // Only a payment still waiting in stagedReceipts can expire: once
+        // complete() has claimed it, it counts until it ends.
         const held = stagedReceipts.get(spend.intent_id);
         const expired = held !== undefined && Date.parse(held.record.expires_at) < now;
         return !expired && spend.idempotencyKey !== idempotencyKey && matchesFilter(spend, filter);
@@ -229,6 +231,9 @@ export function blacktea(options: BlackteaOptions): PayFunction {
         policy,
         historyWithPending(idempotencyKey),
       );
+      // Emitted before the payment is added: if the audit sink throws, the
+      // payment ends here with nothing left pending.
+      emitDecision(intentId, decision);
       if (decision.kind !== "reject") {
         pendingSpends.set(intentId, {
           ts: new Date().toISOString(),
@@ -441,13 +446,6 @@ export function blacktea(options: BlackteaOptions): PayFunction {
     const policyInput = toPolicyInput(input, requirement);
 
     const decision = await evaluateAndReserve(intentId, idempotencyKey, policyInput);
-    try {
-      emitDecision(intentId, decision);
-    } catch (err) {
-      // A throwing audit sink ends the payment here.
-      pendingSpends.delete(intentId);
-      throw err;
-    }
     if (decision.kind === "reject") {
       return { kind: "rejected", reason: decision.reason, ruleFired: decision.rule_fired };
     }
@@ -593,6 +591,8 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       rule_fired: ruleFired,
       intent_id: intentId,
     });
+    // Recorded, so no longer pending (it would be counted twice).
+    pendingSpends.delete(intentId);
 
     await idempotency.put(idempotencyKey, receipt, DEFAULT_IDEMPOTENCY_TTL_SECONDS);
 
