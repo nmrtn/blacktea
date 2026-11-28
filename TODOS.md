@@ -32,11 +32,12 @@ Redis), or a lock file around evaluate-through-record in the CLI.
 
 ## Publishing discipline
 
-`@nmrtn/blacktea` 0.1.5 and `@nmrtn/blacktea-mcp` 0.1.4 are published.
-Publishing is a manual step (`npm publish`, run by hand), SDK first.
+`@nmrtn/blacktea` 0.1.6 and `@nmrtn/blacktea-mcp` 0.1.4 are published.
+Publishing is a manual step (`npm publish`, run by hand, from the repo root
+for the SDK and from `mcp-server/` for the MCP server), SDK first.
 
-`@nmrtn/blacktea` 0.1.6 is ready to publish once its release commit is on
-`main`. The MCP server depends on `^0.1.5`, so fresh installs pick up 0.1.6
+`@nmrtn/blacktea` 0.1.7 is ready to publish once its release commit is on
+`main`. The MCP server depends on `^0.1.5`, so fresh installs pick up 0.1.7
 without an MCP release.
 
 ---
