@@ -31,7 +31,8 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "site:theme": "cp brand/theme.css site/theme.css && cp brand/assets/logo/blacktea-mark.svg site/mark.svg",
-    "site:engine": "esbuild site/playground/engine.ts --bundle --format=esm --minify --target=es2020 --outfile=site/playground/engine.js"
+    "site:engine": "esbuild site/playground/engine.ts --bundle --format=esm --minify --target=es2020 --outfile=site/playground/engine.js",
+    "site:deploy": "git subtree push --prefix site origin gh-pages"
   },
   "engines": {
     "node": ">=20"
