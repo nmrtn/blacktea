@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Black Tea · spending controls for AI agents</title>
+    <meta
+      name="description"
+      content="Black Tea puts spending limits and human approval between an AI agent and its wallet. Open source: SDK, CLI and MCP server."
+    />
+    <link rel="icon" href="mark.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="theme.css" />
+    <link rel="stylesheet" href="site.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <nav class="nav">
+        <a class="lockup" href="./" aria-label="Black Tea, home">
+          <img src="mark.svg" width="22" height="22" alt="" />
+          black tea
+        </a>
+        <ul>
+          <li><a href="https://github.com/nmrtn/blacktea#readme">Docs</a></li>
+          <li><a href="playground/">Playground</a></li>
+          <li><a href="https://github.com/nmrtn/blacktea">GitHub</a></li>
+        </ul>
+      </nav>
+
+      <main>
+        <header class="hero">
+          <div>
+            <p class="label">Spending controls for AI agents</p>
+            <h1>Your agent can pay. You decide how much.</h1>
+            <p class="lead">
+              Black Tea sits between an AI agent and its wallet.
+              <b
+                >A policy file sets the limits, a human approves what falls outside them, and every
+                approval leaves a receipt.</b
+              >
+              Open source. SDK, CLI and MCP server.
+            </p>
+            <div class="cta">
+              <code class="install"><span>$</span>npm i @nmrtn/blacktea</code>
+              <a class="link" href="playground/">Try it in the playground →</a>
+            </div>
+          </div>
+
+          <aside class="receipt" aria-label="Example approval receipt">
+            <div class="receipt-head"><span>Approval receipt</span><span>intent_7f3a…c41e</span></div>
+            <dl>
+              <div class="row"><dt>state</dt><i></i><dd class="held">held for approval</dd></div>
+              <div class="row"><dt>amount</dt><i></i><dd>12.00 USDC</dd></div>
+              <div class="row"><dt>to</dt><i></i><dd>0x8f3c…a21b</dd></div>
+              <div class="row"><dt>url</dt><i></i><dd>api.transcripts.example/v1/NVDA/q3</dd></div>
+              <div class="row"><dt>rule</dt><i></i><dd>default: ask a human</dd></div>
+              <div class="row">
+                <dt>trigger</dt><i></i><dd>"What did Nvidia say about export limits?"</dd>
+              </div>
+              <div class="row aside"><dd>reported by the agent, not proof</dd></div>
+              <div class="row"><dt>request</dt><i></i><dd>sha256:jcs-v1:45dd1e70…</dd></div>
+              <div class="row"><dt>expires</dt><i></i><dd>in 4 min 52 s</dd></div>
+            </dl>
+            <div class="receipt-foot">
+              <span class="btn btn-approve">Approve</span><span class="btn">Reject</span>
+            </div>
+          </aside>
+        </header>
+
+        <section class="section">
+          <div class="section-title">
+            <h2>What it stops</h2>
+            <p>Three things an agent with a wallet gets wrong, or gets talked into.</p>
+          </div>
+          <ol class="items">
+            <li>
+              <span class="n">01</span>
+              <div>
+                <h3>The price changes after you said yes.</h3>
+                <p>
+                  An approval is bound to the exact request. A higher amount, another payee, another
+                  network or another token at settle time is refused before anything is signed.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="n">02</span>
+              <div>
+                <h3>Many small payments add up to a large one.</h3>
+                <p>
+                  <code>would_spend</code> counts what was already paid, in total, per wallet or per
+                  host, before it allows the next one.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="n">03</span>
+              <div>
+                <h3>The same approval is used twice.</h3>
+                <p>
+                  A held payment can be completed once. A replayed, altered or expired approval
+                  never reaches the wallet.
+                </p>
+              </div>
+            </li>
+          </ol>
+        </section>
+
+        <section class="section">
+          <div class="section-title">
+            <h2>The policy is a file</h2>
+            <p>
+              Rules run top to bottom, first match wins. They are checked in code, outside the
+              prompt, so the model cannot argue with them.
+            </p>
+          </div>
+          <div>
+            <pre class="code"><code><span class="c">// policy.json</span>
+{
+  "rules": [
+    { "if": { "wallet_in": "./blocklist.txt" },
+      "then": { "reject": "blocked_wallet" } },
+    { "if": { "would_spend": { "window_hours": 24, "gte": 50 } },
+      "then": { "reject": "daily_cap" } },
+    { "if": { "amount_lt": 5 },
+      "then": { "approve": true } }
+  ],
+  "default": { "approval": "callback" }
+}</code></pre>
+            <dl class="outcomes">
+              <div class="row"><dt>a wallet on your blocklist</dt><i></i><dd>refused</dd></div>
+              <div class="row"><dt>more than 50 USDC in a day</dt><i></i><dd>refused</dd></div>
+              <div class="row"><dt>under 5 USDC</dt><i></i><dd>paid</dd></div>
+              <div class="row"><dt>anything else</dt><i></i><dd class="held">held for a human</dd></div>
+            </dl>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-title">
+            <h2>Three ways in</h2>
+            <p>One codebase. Pick the one your agent can reach.</p>
+          </div>
+          <ol class="items">
+            <li>
+              <span class="n">sdk</span>
+              <div>
+                <h3>A function your agent calls.</h3>
+                <pre class="code"><code>import { blacktea } from "@nmrtn/blacktea";
+import { x402Wallet } from "@nmrtn/blacktea/adapters";
+
+const pay = blacktea({
+  policy: "./policy.json",
+  source: x402Wallet({
+    privateKey: process.env.EVM_PRIVATE_KEY,
+    chain: "base",
+  }),
+});
+
+const { data, receipt } = await pay({
+  url: "https://api.transcripts.example/v1/NVDA/q3",
+  intent: "earnings call transcript",
+  trigger: "What did Nvidia say about export limits?",
+});</code></pre>
+              </div>
+            </li>
+            <li>
+              <span class="n">cli</span>
+              <div>
+                <h3>A command for agents with a shell.</h3>
+                <pre class="code"><code><span class="c">$</span> blacktea pay --url https://api.transcripts.example/v1/NVDA/q3 \
+    --intent "earnings call transcript" --max-amount 20
+<span class="c">$</span> blacktea approvals show --last 10</code></pre>
+              </div>
+            </li>
+            <li>
+              <span class="n">mcp</span>
+              <div>
+                <h3>A server for Claude Desktop, Cursor and other MCP clients.</h3>
+                <p>
+                  When a payment needs you, the assistant asks in the chat and pays only after you
+                  say yes.
+                </p>
+                <pre class="code"><code>{ "mcpServers": { "blacktea": {
+    "command": "npx",
+    "args": ["-y", "@nmrtn/blacktea-mcp"],
+    "env": {
+      "EVM_PRIVATE_KEY": "0x...",
+      "BLACKTEA_POLICY": "/path/to/policy.json"
+    }
+} } }</code></pre>
+              </div>
+            </li>
+          </ol>
+        </section>
+
+        <section class="section">
+          <div class="section-title">
+            <h2>What it is not</h2>
+            <p>Worth knowing before you install it.</p>
+          </div>
+          <ol class="items">
+            <li>
+              <span class="n">01</span>
+              <div>
+                <h3>Not a wallet.</h3>
+                <p>You bring the key. Black Tea decides whether it gets used.</p>
+              </div>
+            </li>
+            <li>
+              <span class="n">02</span>
+              <div>
+                <h3>Not a hosted service.</h3>
+                <p>
+                  It is a library that runs in your process. There is no account and nothing to sign
+                  up for. Where approvals are sent, Slack or anything else, is your code.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="n">03</span>
+              <div>
+                <h3>One rail today.</h3>
+                <p>
+                  x402, which pays for HTTP resources in USDC on Base. The rail is an interface;
+                  cards and bank transfers are not built.
+                </p>
+              </div>
+            </li>
+          </ol>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <a class="lockup" href="./"><img src="mark.svg" width="22" height="22" alt="" />black tea</a>
+        <dl>
+          <div class="row">
+            <dt>source</dt><i></i>
+            <dd><a href="https://github.com/nmrtn/blacktea">github.com/nmrtn/blacktea</a></dd>
+          </div>
+          <div class="row">
+            <dt>sdk and cli</dt><i></i>
+            <dd><a href="https://www.npmjs.com/package/@nmrtn/blacktea">@nmrtn/blacktea</a></dd>
+          </div>
+          <div class="row">
+            <dt>mcp server</dt><i></i>
+            <dd><a href="https://www.npmjs.com/package/@nmrtn/blacktea-mcp">@nmrtn/blacktea-mcp</a></dd>
+          </div>
+          <div class="row"><dt>license</dt><i></i><dd>MIT</dd></div>
+        </dl>
+      </footer>
+    </div>
+  </body>
+</html>

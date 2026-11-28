@@ -1,0 +1,264 @@
+/* Playground. Builds on ../site.css; every value comes from ../theme.css. */
+
+.pg-head {
+  padding: var(--space-8) 0 var(--space-7);
+}
+
+.pg-head h1 {
+  max-width: 16ch;
+  font-size: var(--text-h1);
+  line-height: 1.07;
+  letter-spacing: -0.03em;
+}
+
+.pg-head .lead {
+  margin-bottom: 0;
+  max-width: 62ch;
+}
+
+.pg {
+  display: grid;
+  grid-template-columns: 3fr 5fr 4fr;
+  gap: var(--space-7);
+  align-items: start;
+  padding: var(--space-7) 0 var(--space-8);
+  border-top: 1px solid var(--color-border-hairline);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+
+.pg > * {
+  min-width: 0;
+}
+
+.pg h2.label {
+  margin: 0 0 var(--space-4);
+  font-weight: 400;
+}
+
+.pg h2.pg-gap {
+  margin-top: var(--space-7);
+}
+
+/* Scenarios */
+
+.scenarios {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scenarios button {
+  display: grid;
+  grid-template-columns: var(--space-6) 1fr;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-4) 0;
+  border: 0;
+  border-top: 1px solid var(--color-border-hairline);
+  background: none;
+  color: var(--color-ink-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+
+.scenarios li:first-child button {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.scenarios button:hover,
+.scenarios button[aria-pressed="true"] {
+  color: var(--color-ink-strong);
+}
+
+.scenarios b {
+  display: block;
+  font-weight: 500;
+}
+
+.scenarios small {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-body-sm);
+  line-height: 1.45;
+  color: var(--color-ink-muted);
+}
+
+.scenarios button[aria-pressed="true"] .n {
+  color: var(--color-ink-base);
+}
+
+/* Policy editor and payment fields */
+
+.editor {
+  display: block;
+  width: 100%;
+  height: 15rem;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-hairline);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-raised);
+  color: var(--color-ink-base);
+  font-family: var(--font-mono);
+  font-size: var(--text-metric);
+  line-height: 1.54;
+  resize: vertical;
+  tab-size: 2;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.editor:focus-visible,
+.fields input:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--color-state-focus);
+  outline-offset: 2px;
+}
+
+.errors {
+  margin: var(--space-3) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-metric);
+  line-height: 1.54;
+  color: var(--color-state-danger);
+  white-space: pre-wrap;
+}
+
+.fields .row span {
+  flex: none;
+  color: var(--color-ink-muted);
+}
+
+.fields input {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--color-ink-base);
+  font: inherit;
+  text-align: right;
+}
+
+.fields input:hover,
+.fields input:focus {
+  border-bottom-color: var(--color-border-base);
+}
+
+.fields em {
+  flex: none;
+  font-style: normal;
+}
+
+.pg-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-5);
+}
+
+button.btn {
+  background: none;
+  color: var(--color-ink-base);
+  font-family: var(--font-text);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-standard);
+}
+
+button.btn:hover {
+  border-color: var(--color-border-strong);
+}
+
+button.btn-approve {
+  background: var(--color-accent-base);
+  color: var(--color-accent-on);
+}
+
+button.btn-approve:hover {
+  border-color: var(--color-accent-hover);
+  background: var(--color-accent-hover);
+}
+
+.hint {
+  font-size: var(--text-body-sm);
+  color: var(--color-ink-muted);
+}
+
+/* Receipt states and ledger */
+
+.pg .receipt {
+  margin-top: 0;
+}
+
+.receipt .row dd {
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+
+.ok {
+  color: var(--color-state-success);
+}
+
+.no {
+  color: var(--color-state-danger);
+}
+
+.receipt-empty {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-metric);
+  line-height: 1.54;
+  color: var(--color-ink-muted);
+}
+
+.ledger .row.total dt,
+.ledger .row.total dd {
+  color: var(--color-ink-strong);
+}
+
+.pg-reset {
+  margin-top: var(--space-4);
+}
+
+.pg-note {
+  max-width: 66ch;
+  margin: 0;
+  padding: var(--space-7) 0 var(--space-9);
+  color: var(--color-ink-muted);
+}
+
+.pg-note a {
+  color: var(--color-ink-base);
+  border-bottom: 1px solid var(--color-border-base);
+}
+
+.nav [aria-current="page"] {
+  color: var(--color-ink-strong);
+}
+
+@media (max-width: 1100px) {
+  .pg {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .pg > :first-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 900px) {
+  .pg {
+    grid-template-columns: 1fr;
+  }
+
+  .pg-head h1 {
+    font-size: 2.5rem;
+  }
+
+  .fields input {
+    max-width: 60%;
+  }
+}
