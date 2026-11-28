@@ -8,7 +8,9 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
-## Unreleased
+## `@nmrtn/blacktea` v0.1.7 - 2026-11-28
+
+Spending limits now hold when payments overlap.
 
 ### Security
 
