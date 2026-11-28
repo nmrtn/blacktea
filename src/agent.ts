@@ -719,7 +719,11 @@ export function blacktea(options: BlackteaOptions): PayFunction {
       result = await stageReady(prep, input, opts);
       return result;
     } finally {
-      if (result?.outcome !== "approval_required") pendingSpends.delete(prep.intentId);
+      if (result?.outcome !== "approval_required") {
+        pendingSpends.delete(prep.intentId);
+        // If holding it threw partway, it must not stay approvable.
+        stagedReceipts.delete(prep.intentId);
+      }
     }
   }
 
