@@ -1,7 +1,16 @@
 {
   "$schema": "https://biomejs.dev/schemas/1.9.0/schema.json",
   "files": {
-    "ignore": ["dist", "coverage", "node_modules", ".blacktea"]
+    "ignore": [
+      "dist",
+      "coverage",
+      "node_modules",
+      ".blacktea",
+      "brand",
+      "site/theme.css",
+      ".gstack",
+      "site/playground/engine.js"
+    ]
   },
   "formatter": {
     "enabled": true,

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Playground · Black Tea</title>
+    <meta
+      name="description"
+      content="Edit a spending policy, send a payment as an AI agent would, and see what Black Tea does with it. Runs in your browser. Nothing is paid."
+    />
+    <link rel="icon" href="../mark.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../theme.css" />
+    <link rel="stylesheet" href="../site.css" />
+    <link rel="stylesheet" href="playground.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <nav class="nav">
+        <a class="lockup" href="../" aria-label="Black Tea, home">
+          <img src="../mark.svg" width="22" height="22" alt="" />
+          black tea
+        </a>
+        <ul>
+          <li><a href="https://github.com/nmrtn/blacktea#readme">Docs</a></li>
+          <li><a href="./" aria-current="page">Playground</a></li>
+          <li><a href="https://github.com/nmrtn/blacktea">GitHub</a></li>
+        </ul>
+      </nav>
+
+      <main>
+        <header class="pg-head">
+          <p class="label">Playground</p>
+          <h1>Be the agent. Try to overspend.</h1>
+          <p class="lead">
+            This page runs Black Tea's policy evaluator, the same code as the library, in your
+            browser. <b>No wallet, no network, nothing is paid.</b> Pick a scenario or write your
+            own.
+          </p>
+        </header>
+
+        <div class="pg">
+          <section aria-labelledby="scenarios-title">
+            <h2 class="label" id="scenarios-title">Scenarios</h2>
+            <ol class="scenarios" id="scenarios"></ol>
+          </section>
+
+          <section aria-labelledby="policy-title">
+            <h2 class="label" id="policy-title">policy.json</h2>
+            <textarea id="policy" class="editor" spellcheck="false" aria-labelledby="policy-title"></textarea>
+            <p class="errors" id="errors" role="alert" hidden></p>
+
+            <h2 class="label pg-gap" id="payment-title">The payment the agent wants to make</h2>
+            <form id="payment" class="fields" aria-labelledby="payment-title">
+              <label class="row"
+                ><span>amount</span><i></i><input name="amount" inputmode="decimal" size="8" /><em
+                  >USDC</em
+                ></label
+              >
+              <label class="row"><span>to</span><i></i><input name="wallet" size="44" /></label>
+              <label class="row"><span>url</span><i></i><input name="url" size="44" /></label>
+              <label class="row"><span>intent</span><i></i><input name="intent" size="44" /></label>
+              <label class="row"><span>trigger</span><i></i><input name="trigger" size="44" /></label>
+              <div class="pg-actions">
+                <button type="submit" class="btn">Send payment</button>
+                <span class="hint" id="hint"></span>
+              </div>
+            </form>
+          </section>
+
+          <section aria-labelledby="receipt-title">
+            <h2 class="label" id="receipt-title">What Black Tea does</h2>
+            <aside class="receipt" id="receipt" aria-live="polite"></aside>
+
+            <h2 class="label pg-gap" id="ledger-title">Paid in this tab</h2>
+            <dl class="ledger" id="ledger" aria-labelledby="ledger-title"></dl>
+            <button type="button" class="btn pg-reset" id="reset">Clear payments</button>
+          </section>
+        </div>
+
+        <p class="pg-note">
+          What this page leaves out: the wallet, the x402 request, and the checks that run when a
+          payment settles (a quote that changes after approval, an approval used twice). Those need
+          a real payment. The
+          <a href="https://github.com/nmrtn/blacktea#try-it-in-30-seconds-no-wallet-needed"
+            >30-second example in the README</a
+          >
+          runs the whole library with a simulated wallet.
+        </p>
+      </main>
+    </div>
+    <script type="module" src="playground.js"></script>
+  </body>
+</html>

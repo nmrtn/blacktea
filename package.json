@@ -29,7 +29,9 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "site:theme": "cp brand/theme.css site/theme.css && cp brand/assets/logo/blacktea-mark.svg site/mark.svg",
+    "site:engine": "esbuild site/playground/engine.ts --bundle --format=esm --minify --target=es2020 --outfile=site/playground/engine.js"
   },
   "engines": {
     "node": ">=20"
@@ -43,6 +45,7 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
     "@types/node": "^20.14.0",
+    "esbuild": "^0.28.0",
     "tsx": "^4.16.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"

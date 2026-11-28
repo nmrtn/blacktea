@@ -25,6 +25,6 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src/**/*", "test/**/*"],
+  "include": ["src/**/*", "test/**/*", "site/playground/engine.ts"],
   "exclude": ["node_modules", "dist", "coverage"]
 }
