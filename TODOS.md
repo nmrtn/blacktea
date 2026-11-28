@@ -17,6 +17,20 @@ Code: `src/rails/x402.ts` (the `settle` catch and the non-OK branch),
 accepted a quote, throw a distinct error that says the payment may have
 been paid, and record it to history conservatively.
 
+### Spending limits do not hold across payments made at the same time
+
+Found by the security review of the landing page (2026-11-28). `would_spend`
+and `amount_today_gte` sum what history already holds, and a payment is
+recorded only after it settles. Payments running in parallel (an agent
+framework that fires several tool calls at once, or several held payments
+approved later) each pass the check before any of them is recorded, so
+together they can exceed a cap. The in-flight guard is keyed on the
+idempotency key and does not cover this. Code: `src/agent.ts` (`prepare`,
+`settleThenRecord`). Direction: reserve the amount when the policy is
+evaluated, or serialize evaluate-through-record per factory. Fix before the
+public launch: the landing page's "many small payments" claim is only true
+for payments made one after another.
+
 ## Publishing discipline
 
 `@nmrtn/blacktea` 0.1.5 and `@nmrtn/blacktea-mcp` 0.1.4 are published.

@@ -203,3 +203,24 @@ CHANGELOG.md          Release notes for both packages
   workflows/ci.yml    Lint + typecheck + test + build
   CODEOWNERS          Workflow-edit protection
 ```
+
+## Brand
+
+Anything public-facing in this repo (the landing page, the playground, README
+imagery, social cards) is Black Tea-branded. The brand rules are not optional.
+
+@brand/BRAND.md
+
+- **Values** live in `brand/tokens.json`. Read it when you need an exact hex,
+  size, or rule; every value carries a `_use` or `_rule` next to it.
+- **Never hardcode a colour, a size or a spacing value.** Use the CSS
+  variables in `brand/theme.css`. If a value is not on the scale, round to the
+  nearest step.
+- `brand/assets/reference/landing-hero.html` is the page the brand was
+  approved on. It is a reference for layout and copy, not a source of values.
+- **The user's instruction in this session wins.** Do what they ask, then note
+  in one line what you overrode. Logo integrity and the contrast floor are the
+  exceptions: say what breaks before doing it.
+- Changing the brand means editing `brand/tokens.json` or `brand/BRAND.md`,
+  then running the brand-kit `sync.py` on `brand/`. Use the `brand-kit-update`
+  skill.

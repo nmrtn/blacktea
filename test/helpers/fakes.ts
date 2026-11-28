@@ -3,7 +3,7 @@
  * network.
  */
 
-import { hostOf } from "../../src/host.js";
+import { matchesFilter } from "../../src/history/filter.js";
 import type {
   AuditEvent,
   HistoryFilter,
@@ -23,25 +23,18 @@ export class FakeHistory implements HistoryStore {
     this.events.push(event);
   }
   async sumSince(opts: { seconds: number; filter?: HistoryFilter }): Promise<number> {
-    return this.events.filter((e) => match(e, opts.filter)).reduce((acc, e) => acc + e.amount, 0);
+    return this.events
+      .filter((e) => matchesFilter(e, opts.filter))
+      .reduce((acc, e) => acc + e.amount, 0);
   }
   async countSince(opts: { seconds: number; filter?: HistoryFilter }): Promise<number> {
-    return this.events.filter((e) => match(e, opts.filter)).length;
+    return this.events.filter((e) => matchesFilter(e, opts.filter)).length;
   }
   async prune(): Promise<number> {
     const len = this.events.length;
     this.events = [];
     return len;
   }
-}
-
-function match(e: HistoryRecord, filter: HistoryFilter | undefined): boolean {
-  if (!filter) return true;
-  if (filter.wallet && e.recipient_wallet?.toLowerCase() !== filter.wallet.toLowerCase()) {
-    return false;
-  }
-  if (filter.url && (!e.recipient_url || hostOf(e.recipient_url) !== filter.url)) return false;
-  return true;
 }
 
 /**

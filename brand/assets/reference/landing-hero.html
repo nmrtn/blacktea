@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="mark.svg">
+<title>Black Tea · spending controls for AI agents</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ground:#0C0B0A; --surface:#141311; --raised:#1C1A17; --line:#2A2723;
+  --ink:#ECE8E1; --muted:#9A9389; --faint:#6B655D;
+  --amber:#DB9440; --amber-on:#1B1206; --amber-glow:rgba(219,148,64,.09);
+  --ok:#7FB58A; --no:#E0796B;
+  --sans:"Geist",sans-serif; --mono:"Geist Mono",monospace;
+  --r1:2px; --r2:6px; --r3:12px;
+}
+*{box-sizing:border-box}
+html{background:var(--ground)}
+body{margin:0;color:var(--ink);font-family:var(--sans);font-size:16px;line-height:26px;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1216px;margin:0 auto;padding:0 48px}
+nav{display:flex;align-items:center;justify-content:space-between;height:80px}
+.mark{display:flex;align-items:center;gap:8px;font-weight:600;font-size:18px;letter-spacing:-.03em}
+.mark i{font-style:normal;color:var(--amber)}
+nav ul{display:flex;gap:32px;list-style:none;margin:0;padding:0;font-size:14px;color:var(--muted)}
+nav ul a:hover{color:var(--ink)}
+.hero{display:grid;grid-template-columns:7fr 5fr;gap:64px;align-items:start;padding:96px 0 128px;position:relative}
+.hero::after{content:"";position:absolute;right:-160px;top:-40px;width:760px;height:760px;background:radial-gradient(closest-side,var(--amber-glow),transparent);pointer-events:none}
+.over{font-family:var(--mono);font-size:12px;line-height:16px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 24px}
+h1{font-size:72px;line-height:72px;letter-spacing:-.035em;font-weight:600;margin:0 0 32px;max-width:11ch}
+.lede{font-size:18px;line-height:29px;color:var(--muted);max-width:52ch;margin:0 0 40px}
+.lede b{color:var(--ink);font-weight:500}
+.cta{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.install{font-family:var(--mono);font-size:14px;line-height:20px;padding:12px 16px;border:1px solid var(--line);border-radius:var(--r2);background:var(--surface);color:var(--ink)}
+.install span{color:var(--faint);margin-right:8px}
+.btn{font-size:14px;font-weight:500;padding:12px 16px;border-radius:var(--r2);color:var(--ink);border:1px solid transparent;transition:border-color 150ms cubic-bezier(.16,1,.3,1)}
+.btn:hover{border-color:var(--line)}
+.receipt{position:relative;z-index:1;background:var(--surface);border:1px solid var(--line);border-radius:var(--r3);padding:24px;font-family:var(--mono);font-size:13px;line-height:20px;margin-top:8px}
+.receipt header{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;letter-spacing:.08em;text-transform:uppercase;padding-bottom:16px;border-bottom:1px solid var(--line);margin-bottom:16px}
+.row{display:flex;align-items:baseline;gap:8px;padding:4px 0}
+.row .k{color:var(--muted);flex:none}
+.row .dots{flex:1;border-bottom:1px dotted var(--faint);transform:translateY(-4px);min-width:16px}
+.row .v{flex:none;text-align:right;max-width:62%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.held{color:var(--amber)}
+.note{color:var(--faint)}
+.receipt footer{display:flex;gap:8px;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+.receipt button{font-family:var(--sans);font-size:14px;font-weight:500;padding:8px 16px;border-radius:var(--r2);cursor:pointer}
+.approve{background:var(--amber);color:var(--amber-on);border:1px solid var(--amber)}
+.reject{background:transparent;color:var(--ink);border:1px solid var(--line)}
+section.stops{border-top:1px solid var(--line);padding:96px 0 128px;display:grid;grid-template-columns:4fr 8fr;gap:64px}
+h2{font-size:30px;line-height:38px;letter-spacing:-.015em;font-weight:600;margin:0}
+.stops p.sub{color:var(--muted);margin:16px 0 0;max-width:32ch}
+.case{display:grid;grid-template-columns:48px 1fr;gap:16px;padding:24px 0;border-bottom:1px solid var(--line)}
+.case:first-child{padding-top:0}
+.case .n{font-family:var(--mono);font-size:12px;color:var(--faint);line-height:26px}
+.case h3{font-size:16px;line-height:26px;font-weight:500;margin:0 0 4px}
+.case p{margin:0;color:var(--muted);max-width:62ch}
+.case code{font-family:var(--mono);font-size:13px;color:var(--ink)}
+@media (max-width:900px){.wrap{padding:0 24px}.hero,section.stops{grid-template-columns:1fr;gap:48px;padding:64px 0 80px}h1{font-size:44px;line-height:46px}nav ul{gap:16px}.hero::after{display:none}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="mark" href="#"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" width="22" height="22"><circle cx="11" cy="12" r="8" stroke="currentColor"/><circle cx="11" cy="12" r="4.25" fill="#DB9440"/><path d="M19.2 9.4a3.1 3.1 0 0 1 0 5.2" stroke="currentColor"/></svg>black tea</a>
+    <ul><li><a href="#">Docs</a></li><li><a href="#">Playground</a></li><li><a href="#">GitHub</a></li></ul>
+  </nav>
+
+  <main class="hero">
+    <div>
+      <p class="over">Spending controls for AI agents</p>
+      <h1>Your agent can pay. You decide how much.</h1>
+      <p class="lede">Black Tea sits between an AI agent and its wallet. <b>A policy file sets the limits, a human approves what falls outside them, and every approval leaves a receipt.</b> Open source. SDK, CLI and MCP server.</p>
+      <div class="cta">
+        <code class="install"><span>$</span>npm i @nmrtn/blacktea</code>
+        <a class="btn" href="#">Try it in the playground →</a>
+      </div>
+    </div>
+
+    <aside class="receipt" aria-label="Approval receipt">
+      <header><span>Approval receipt</span><span>intent_7f3a…c41e</span></header>
+      <div class="row"><span class="k">state</span><span class="dots"></span><span class="v held">held for approval</span></div>
+      <div class="row"><span class="k">amount</span><span class="dots"></span><span class="v">12.00 USDC</span></div>
+      <div class="row"><span class="k">to</span><span class="dots"></span><span class="v">0x8f3c…a21b</span></div>
+      <div class="row"><span class="k">url</span><span class="dots"></span><span class="v">api.transcripts.example/v1/NVDA/q3</span></div>
+      <div class="row"><span class="k">rule</span><span class="dots"></span><span class="v">rule[2] amount_gte 5</span></div>
+      <div class="row"><span class="k">trigger</span><span class="dots"></span><span class="v">"What did Nvidia say about export limits?"</span></div>
+      <div class="row"><span class="k note">&nbsp;</span><span class="v note" style="max-width:100%;margin-left:auto">reported by the agent, not proof</span></div>
+      <div class="row"><span class="k">request</span><span class="dots"></span><span class="v">sha256:jcs-v1:45dd1e70…</span></div>
+      <div class="row"><span class="k">expires</span><span class="dots"></span><span class="v">in 4 min 52 s</span></div>
+      <footer><button class="approve">Approve</button><button class="reject">Reject</button></footer>
+    </aside>
+  </main>
+
+  <section class="stops">
+    <div>
+      <h2>What it stops</h2>
+      <p class="sub">Three things an agent with a wallet gets wrong, or gets talked into.</p>
+    </div>
+    <div>
+      <div class="case"><span class="n">01</span><div><h3>The price changes after you said yes.</h3><p>An approval is bound to the exact request. A higher amount, another payee or another network at settle time is refused before anything is signed.</p></div></div>
+      <div class="case"><span class="n">02</span><div><h3>Many small payments add up to a large one.</h3><p><code>would_spend</code> counts what was already paid, per wallet or per host, before it allows the next one.</p></div></div>
+      <div class="case"><span class="n">03</span><div><h3>The same approval is used twice.</h3><p>A held payment can be completed once. A replayed, altered or expired approval never reaches the wallet.</p></div></div>
+    </div>
+  </section>
+</div>
+</body>
+</html>
