@@ -8,6 +8,26 @@ This file covers both `@nmrtn/blacktea` (the SDK + CLI) and `@nmrtn/blacktea-mcp
 
 ---
 
+## Unreleased
+
+### Security
+
+- **Spending limits hold across payments made at the same time.**
+  `would_spend` and `amount_today_gte` summed only payments already
+  recorded, and a payment is recorded after it settles. Payments that
+  overlapped (an agent firing several tool calls at once, or several
+  payments held with `pay.stage()` and approved later) each passed the
+  check before any of them was recorded, so together they could exceed a
+  cap. A payment the policy lets through now counts toward those limits
+  from that moment: while it settles and while it waits for approval. It
+  stops counting if it is denied, if its settle fails, or when its approval
+  window passes. Policy evaluations run one at a time; settles and
+  approvals still overlap. No change to the `HistoryStore` interface.
+  Limits are held inside one process: separate processes that share a
+  history file do not see each other's unfinished payments.
+
+---
+
 ## `@nmrtn/blacktea` v0.1.6 - 2026-11-28
 
 Two fixes for policy rules that could be stepped around.

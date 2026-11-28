@@ -20,8 +20,8 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { hostOf } from "../host.js";
 import type { HistoryFilter, HistoryRecord, HistoryStore } from "../types.js";
+import { matchesFilter } from "./filter.js";
 
 export interface FileBackedHistoryOptions {
   /** Path to the JSONL file. Defaults to ./.blacktea/history.jsonl. */
@@ -109,18 +109,4 @@ export class FileBackedHistoryStore implements HistoryStore {
   filePath(): string {
     return this.path;
   }
-}
-
-function matchesFilter(event: HistoryRecord, filter: HistoryFilter | undefined): boolean {
-  if (!filter) return true;
-  // Letter case is ignored, as in the policy's wallet_in: a payee must not
-  // escape a per-wallet limit by changing the casing of its address.
-  if (filter.wallet && event.recipient_wallet?.toLowerCase() !== filter.wallet.toLowerCase()) {
-    return false;
-  }
-  // filter.url is a host; records hold the full request URL.
-  if (filter.url && (!event.recipient_url || hostOf(event.recipient_url) !== filter.url)) {
-    return false;
-  }
-  return true;
 }

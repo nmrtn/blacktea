@@ -17,6 +17,19 @@ Code: `src/rails/x402.ts` (the `settle` catch and the non-OK branch),
 accepted a quote, throw a distinct error that says the payment may have
 been paid, and record it to history conservatively.
 
+### Spending limits do not hold across processes sharing a history file
+
+Narrowed from "Spending limits do not hold across payments made at the same
+time" (security review of the landing page, 2026-11-28). Inside one
+`blacktea()` factory the limit now holds: a payment the policy lets through
+counts toward `would_spend` and `amount_today_gte` while it settles or
+waits for approval (`pendingSpends` in `src/agent.ts`). Two processes
+pointing at the same `history.jsonl` (two CLI invocations run in parallel,
+several agents sharing a directory) still each read history before the
+other has recorded, and the file-backed store has no locking. Direction: a
+`HistoryStore` backed by something with atomic reserve-then-commit (SQLite,
+Redis), or a lock file around evaluate-through-record in the CLI.
+
 ## Publishing discipline
 
 `@nmrtn/blacktea` 0.1.5 and `@nmrtn/blacktea-mcp` 0.1.4 are published.
